@@ -1,0 +1,15 @@
+# The Dystopika ModKit template project is unzipped into /modkit and is never
+# committed (the Voids Within EULA forbids redistributing it). Only our own
+# package inside it is tracked.
+/modkit/*
+!/modkit/Assets/
+/modkit/Assets/*
+!/modkit/Assets/Dystopographica/
+!/modkit/Assets/Dystopographica.meta
+
+# Copies of the ModKit project are the ModKit too.
+/modkit - Copy/
+
+# Pages exported from the Dystopika modding wiki. They are Voids Within's, so they
+# stay local.
+/docs/reference/
