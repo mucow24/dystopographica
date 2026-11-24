@@ -4,6 +4,7 @@
     "references": [
         "Dystopographica.Editor",
         "Unity.Addressables",
+        "Unity.RenderPipelines.Universal.Runtime",
         "UnityEngine.TestRunner",
         "UnityEditor.TestRunner"
     ],

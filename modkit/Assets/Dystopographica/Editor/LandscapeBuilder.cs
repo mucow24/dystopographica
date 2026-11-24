@@ -11,7 +11,16 @@ namespace Dystopographica
     public static class LandscapeBuilder
     {
         const int ThumbnailWidth = 1024, ThumbnailHeight = 512;
+        const string WaterShader = "Dystopographica/Water";
+        const int RippleTextureSize = 256;
         static readonly Color WaterColour = new Color(0.23f, 0.59f, 0.55f);
+
+        // Mods made while each map size had a landscape of its own still hold these.
+        static readonly string[] FilesOfTheOldScheme =
+        {
+            "Landscape 200.prefab", "Landscape 400.prefab", "Terrain Data 200.asset", "Terrain Data 400.asset",
+            "Landscape Definition 200.asset", "Landscape Definition 400.asset",
+        };
 
         /// <summary>
         /// A smoothed copy of the heightmap, small enough to repaint while a cursor is
@@ -21,6 +30,18 @@ namespace Dystopographica
         {
             int factor = Mathf.Max(1, Mathf.CeilToInt(Mathf.Max(normalized.Width, normalized.Height) / (float)maxSize));
             return Smoothing.Gaussian(Resample.Shrink(normalized, factor), smoothing / factor);
+        }
+
+        /// <summary>
+        /// A map with the small holes in its city plane filled. The size limit in the
+        /// settings is an area in pixels of the heightmap file; `map` may be a resized
+        /// copy of that file, originally `originalWidth` wide, so the limit is converted.
+        /// </summary>
+        public static Heightmap WithoutSpecks(Heightmap map, int originalWidth, LandscapeSettings settings)
+        {
+            float scale = map.Width / (float)originalWidth;
+            int limit = Mathf.RoundToInt(settings.speckSize * scale * scale);
+            return Specks.FillPlane(map, settings.planeStart, settings.planeEnd, limit);
         }
 
         /// <summary>The smoothed heightmap at the resolution the terrain will have.</summary>
@@ -45,30 +66,30 @@ namespace Dystopographica
 
             string folder = settings.Folder;
             Heightmap normalized = source.Normalized();
-            Heightmap terrainMap = TerrainMap(normalized, settings.smoothing);
+            Heightmap terrainMap = WithoutSpecks(TerrainMap(normalized, settings.smoothing), normalized.Width, settings);
+            TerrainShape shape = TerrainHeights.Build(terrainMap, settings.Curve(), settings.peakHeight, settings.BedDrop);
+            TerrainData terrainData = WriteTerrainData(folder + "/Terrain Data.asset", shape, settings.WorldSize);
             Material terrainMaterial = FindOrCreateMaterial(folder + "/Terrain.mat", Color.black, 0.03f);
-            Material waterMaterial = FindOrCreateMaterial(folder + "/Water.mat", WaterColour, 0.07f);
 
-            // One landscape per map size: the game widens the build area but never scales
-            // the landscape, so each size needs the map at its own scale.
-            var prefabs = new Dictionary<int, GameObject>();
-            foreach (int percent in LandscapeSettings.AllMapSizes)
+            // One terrain, and a landscape for each kind of water asked for on it.
+            var prefabs = new Dictionary<WaterKind, GameObject>();
+            foreach (WaterKind kind in new[] { WaterKind.Normal, WaterKind.Custom })
             {
-                string suffix = LandscapeSettings.FileSuffix(percent);
-                string terrainPath = $"{folder}/Terrain Data{suffix}.asset", prefabPath = $"{folder}/Landscape{suffix}.prefab";
-                if (!settings.MapSizes().Contains(percent))
+                string path = $"{folder}/Landscape{LandscapeSettings.FileSuffix(kind)}.prefab";
+                if (!settings.Landscapes().Contains(kind))
                 {
-                    // Left over from a run that had this size ticked. Everything in the folder is bundled.
-                    if (File.Exists(prefabPath)) AssetDatabase.DeleteAsset(prefabPath);
-                    if (File.Exists(terrainPath)) AssetDatabase.DeleteAsset(terrainPath);
+                    // Left over from a run that asked for it. Everything in the folder is bundled.
+                    if (File.Exists(path)) AssetDatabase.DeleteAsset(path);
                     continue;
                 }
 
-                LandscapeSettings sized = settings.ForMapSize(percent);
-                TerrainShape shape = TerrainHeights.Build(terrainMap, sized.Curve(), sized.peakHeight, sized.lowestDepth);
-                TerrainData terrainData = WriteTerrainData(terrainPath, shape, sized.worldSize);
-                prefabs[percent] = WritePrefab(prefabPath, sized, shape, terrainData, terrainMaterial, waterMaterial);
+                Material water = !settings.waterPlane ? null
+                    : kind == WaterKind.Custom ? WriteCustomWater(folder)
+                    : FindOrCreateMaterial(folder + "/Water.mat", WaterColour, 0.07f);
+                prefabs[kind] = WritePrefab(path, settings, shape, terrainData, terrainMaterial, water);
             }
+            foreach (string leftover in FilesOfTheOldScheme)
+                if (File.Exists(folder + "/" + leftover)) AssetDatabase.DeleteAsset(folder + "/" + leftover);
 
             Texture2D thumbnail = WriteThumbnail(folder + "/Thumbnail.png", settings, normalized);
             ModKitBridge.WriteMod(folder, settings, prefabs, thumbnail);
@@ -78,12 +99,13 @@ namespace Dystopographica
         }
 
         /// <summary>
-        /// Compiles the mod and copies it into installFolder. The landscape is made first
-        /// if it does not exist yet or the settings have changed since it was made.
+        /// Makes the landscape, compiles the mod and copies it into installFolder. It is
+        /// always made afresh: skipping that when the settings looked unchanged let a newer
+        /// tool, or a newer heightmap under the same name, go uncompiled.
         /// </summary>
         public static void CompileAndInstall(LandscapeSettings settings, Heightmap source, string installFolder)
         {
-            if (!settings.MatchesSavedPreset() || !ModKitBridge.HasMod(settings.Folder)) Make(settings, source);
+            Make(settings, source);
             ModKitBridge.Install(ModKitBridge.Compile(settings.Folder), installFolder);
         }
 
@@ -98,12 +120,20 @@ namespace Dystopographica
             data.size = new Vector3(worldSize, shape.SizeY, worldSize);
             data.SetHeights(0, 0, shape.Heights);
 
-            if (isNew) AssetDatabase.CreateAsset(data, path);
-            else EditorUtility.SetDirty(data);
+            // Saved at once. A change that waits in memory can be lost if Unity reloads the file first.
+            if (isNew)
+            {
+                AssetDatabase.CreateAsset(data, path);
+            }
+            else
+            {
+                EditorUtility.SetDirty(data);
+                AssetDatabase.SaveAssetIfDirty(data);
+            }
             return data;
         }
 
-        /// <summary>Materials are made once and then left alone, so the user's edits to them survive.</summary>
+        /// <summary>The terrain's and the normal water's materials are made once and then left alone, so the user's edits to them survive.</summary>
         static Material FindOrCreateMaterial(string path, Color colour, float smoothness)
         {
             var material = AssetDatabase.LoadAssetAtPath<Material>(path);
@@ -116,7 +146,65 @@ namespace Dystopographica
             return material;
         }
 
-        /// <summary>The same layout as the ModKit's example landscape: a root at the origin, the terrain and a water plane under it.</summary>
+        /// <summary>
+        /// The custom water's material and its ripple texture. Unlike the other materials
+        /// this one is put back to the shader's own settings on every run: the water's
+        /// look belongs to the tool, and a material keeps a copy of every setting, so one
+        /// left alone would keep the look of whichever version of the tool first made
+        /// it. The shader itself stays in the package; the compile pulls it into the mod
+        /// because the material uses it.
+        /// </summary>
+        static Material WriteCustomWater(string folder)
+        {
+            Shader shader = Shader.Find(WaterShader);
+            if (shader == null) throw new InvalidOperationException($"The shader \"{WaterShader}\" is missing. It is part of the Dystopographica package.");
+            var ripples = AssetDatabase.LoadAssetAtPath<Texture2D>(folder + "/Ripples.png");
+            if (ripples == null) ripples = WriteRipples(folder + "/Ripples.png");
+
+            string path = folder + "/Custom Water.mat";
+            var asShipped = new Material(shader);
+            asShipped.SetTexture("_Ripples", ripples);
+            var material = AssetDatabase.LoadAssetAtPath<Material>(path);
+            if (material == null)
+            {
+                AssetDatabase.CreateAsset(asShipped, path);
+                return asShipped;
+            }
+
+            material.shader = shader;
+            material.CopyPropertiesFromMaterial(asShipped);
+            UnityEngine.Object.DestroyImmediate(asShipped);
+            EditorUtility.SetDirty(material);
+            AssetDatabase.SaveAssetIfDirty(material);
+            return material;
+        }
+
+        static Texture2D WriteRipples(string path)
+        {
+            var picture = new Texture2D(RippleTextureSize, RippleTextureSize, TextureFormat.RGBA32, false);
+            picture.SetPixels32(Ripples.NormalMap(RippleTextureSize));
+            File.WriteAllBytes(path, picture.EncodeToPNG());
+            UnityEngine.Object.DestroyImmediate(picture);
+
+            AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceUpdate);
+            var importer = (TextureImporter)AssetImporter.GetAtPath(path);
+            importer.textureType = TextureImporterType.NormalMap;
+            importer.wrapMode = TextureWrapMode.Repeat;
+            importer.mipmapEnabled = true;
+            importer.SaveAndReimport();
+            return AssetDatabase.LoadAssetAtPath<Texture2D>(path);
+        }
+
+        /// <summary>
+        /// The same layout as the ModKit's example landscape: a root at the origin, the
+        /// terrain and a water plane under it.
+        ///
+        /// The game lets a building stand where a landscape's colliders are at city
+        /// level. In the example the terrain and the water carry colliders of their
+        /// own, so the ground decides, and a large building cannot overlap a shore.
+        /// Here, as in the Night City mod, they carry none and one flat sheet at city
+        /// level takes their place: buildings can stand anywhere.
+        /// </summary>
         static GameObject WritePrefab(string path, LandscapeSettings settings, TerrainShape shape, TerrainData terrainData, Material terrainMaterial, Material waterMaterial)
         {
             var root = new GameObject("Landscape");
@@ -124,23 +212,38 @@ namespace Dystopographica
             {
                 var ground = new GameObject("Terrain");
                 ground.transform.SetParent(root.transform, false);
-                ground.transform.localPosition = new Vector3(-settings.worldSize / 2, shape.BaseY, -settings.worldSize / 2);
+                // Everything drawn is raised by the ground lift. The sheet below is not.
+                ground.transform.localPosition = new Vector3(-settings.WorldSize / 2, shape.BaseY + settings.GroundLift, -settings.WorldSize / 2);
                 var terrain = ground.AddComponent<Terrain>();
                 terrain.terrainData = terrainData;
                 terrain.materialTemplate = terrainMaterial;
                 terrain.shadowCastingMode = ShadowCastingMode.TwoSided;
-                ground.AddComponent<TerrainCollider>().terrainData = terrainData;
+                // Unity draws distant terrain with fewer triangles, as long as that moves
+                // nothing up or down by more than this many pixels. At Night City's levels
+                // the shore is a step of a quarter of a unit, which is under Unity's usual
+                // five pixels from quite near, and blurring the step moves the waterline a
+                // long way sideways. So there the terrain gets the finest setting.
+                if (settings.GroundLift > 0f) terrain.heightmapPixelError = 1f;
 
-                if (settings.waterPlane)
+                if (waterMaterial != null)
                 {
                     GameObject water = GameObject.CreatePrimitive(PrimitiveType.Plane);
                     water.name = "Water";
                     water.transform.SetParent(root.transform, false);
-                    water.transform.localPosition = new Vector3(0f, -settings.waterDepth, 0f);
+                    water.transform.localPosition = new Vector3(0f, settings.GroundLift - settings.WaterDrop, 0f);
                     // Unity's plane is 10 units wide.
-                    water.transform.localScale = new Vector3(settings.worldSize / 10, 1f, settings.worldSize / 10);
+                    water.transform.localScale = new Vector3(settings.WorldSize / 10, 1f, settings.WorldSize / 10);
                     water.GetComponent<MeshRenderer>().sharedMaterial = waterMaterial;
+                    UnityEngine.Object.DestroyImmediate(water.GetComponent<Collider>());
                 }
+
+                // Unity's plane again, with nothing left of it but its collider, at y = 0.
+                GameObject sheet = GameObject.CreatePrimitive(PrimitiveType.Plane);
+                sheet.name = "Buildable Plane";
+                sheet.transform.SetParent(root.transform, false);
+                sheet.transform.localScale = new Vector3(settings.WorldSize / 10, 1f, settings.WorldSize / 10);
+                UnityEngine.Object.DestroyImmediate(sheet.GetComponent<MeshRenderer>());
+                UnityEngine.Object.DestroyImmediate(sheet.GetComponent<MeshFilter>());
                 return PrefabUtility.SaveAsPrefabAsset(root, path);
             }
             finally
@@ -162,7 +265,7 @@ namespace Dystopographica
             }
             else
             {
-                Heightmap map = PreviewMap(normalized, settings.smoothing, ThumbnailWidth);
+                Heightmap map = WithoutSpecks(PreviewMap(normalized, settings.smoothing, ThumbnailWidth), normalized.Width, settings);
                 Color32[] painted = Preview.Paint(map, settings.PaintedWater, settings.planeStart, settings.planeEnd);
                 var picture = new Texture2D(ThumbnailWidth, ThumbnailHeight, TextureFormat.RGBA32, false);
                 picture.SetPixels32(Preview.Crop(painted, map.Width, map.Height, ThumbnailWidth, ThumbnailHeight));
