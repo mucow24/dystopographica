@@ -76,25 +76,31 @@ namespace Dystopographica.Tests
             {
                 modName = ModName, author = "Tester", version = 2, landscapeName = "Compiled Valley",
                 water = 0.1f, planeStart = 0.4f, planeEnd = 0.6f, smoothing = 0f,
+                // Both kinds of water, to see each of them through the compile.
+                normalWater = true,
             };
             var values = new float[33 * 33];
             for (int i = 0; i < values.Length; i++) values[i] = i % 33 / 32f;
             string installed = Path.Combine(scratch, "Mods", ModName);
+
+            // A flat landscape made earlier with these very settings must not be what gets
+            // compiled. The tool used to skip the remake when the settings had not changed,
+            // and then a newer tool, or a newer heightmap, never reached the game.
+            LandscapeBuilder.Make(settings, new Heightmap(33, 33, new float[33 * 33]));
 
             LandscapeBuilder.CompileAndInstall(settings, new Heightmap(33, 33, values), installed);
 
             string manifest = File.ReadAllText(Path.Combine(installed, "manifest.json"));
             StringAssert.Contains("\"Name\": \"" + ModName + "\"", manifest);
             StringAssert.Contains("\"Author\": \"Tester\"", manifest);
-            // One landscape per map size, and only the larger ones accept larger sizes.
-            StringAssert.Contains("\"Name\": \"Compiled Valley (100%)\"", manifest);
-            StringAssert.Contains("\"Name\": \"Compiled Valley (200%)\"", manifest);
-            StringAssert.Contains("\"Name\": \"Compiled Valley (400%)\"", manifest);
-            StringAssert.Contains("\"AllowLargeMapSizes\": false", manifest);
+            // One landscape per kind of water, both made for the 400% map size.
+            StringAssert.Contains("\"Name\": \"Compiled Valley\"", manifest);
+            StringAssert.Contains("\"Name\": \"Compiled Valley (normal water)\"", manifest);
             StringAssert.Contains("\"AllowLargeMapSizes\": true", manifest);
+            StringAssert.DoesNotContain("\"AllowLargeMapSizes\": false", manifest);
             StringAssert.Contains("\"Id\": \"compiled-valley-", manifest);
             Assert.IsTrue(File.Exists(Path.Combine(installed, "preview.png")));
-            Assert.AreEqual(3, Directory.GetFiles(installed, "compiled-valley-*.png").Length, "a thumbnail for each landscape");
+            Assert.AreEqual(2, Directory.GetFiles(installed, "compiled-valley-*.png").Length, "a thumbnail for each landscape");
             Assert.IsNotEmpty(Directory.GetFiles(Path.Combine(installed, "StandaloneWindows64"), "*.bundle"));
             Assert.IsNotEmpty(Directory.GetFiles(Path.Combine(installed, "StandaloneWindows64"), "catalog*.json"));
 
@@ -120,8 +126,13 @@ namespace Dystopographica.Tests
                 Assert.IsNotNull(water.GetComponent<MeshFilter>().sharedMesh);
                 Assert.AreEqual("Universal Render Pipeline/Lit", water.GetComponent<MeshRenderer>().sharedMaterial.shader.name);
 
-                var large = bundles[bundles.Count - 1].LoadAsset<GameObject>("Assets/" + ModName + "/Landscape 400.prefab");
-                Assert.AreEqual(terrain.terrainData.size.x * 2, large.GetComponentInChildren<Terrain>().terrainData.size.x);
+                // The custom water brings its own shader and ripple texture, from outside the mod folder.
+                var custom = bundles[bundles.Count - 1].LoadAsset<GameObject>("Assets/" + ModName + "/Landscape Custom Water.prefab");
+                Assert.AreSame(terrain.terrainData, custom.GetComponentInChildren<Terrain>().terrainData, "one terrain for both");
+                Material moving = custom.transform.Find("Water").GetComponent<MeshRenderer>().sharedMaterial;
+                Assert.AreEqual("Dystopographica/Water", moving.shader.name);
+                Assert.IsTrue(moving.shader.isSupported);
+                Assert.IsNotNull(moving.GetTexture("_Ripples"));
             }
             finally
             {

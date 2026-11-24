@@ -14,6 +14,7 @@ namespace Dystopographica
     {
         const int PreviewSize = 512;
         const int HistogramBins = 256;
+        const int LargestSpeckSize = 5000;
         const float BarWidth = 64f;
         const float BarLabelWidth = 80f;
         const float BuildAreaSize = LandscapeSettings.BuildAreaSize;
@@ -21,6 +22,7 @@ namespace Dystopographica
         static readonly Color WaterColour = new Color(0.35f, 0.6f, 1f);
         static readonly Color PlaneColour = new Color(0.35f, 0.85f, 0.45f);
         static readonly string[] CursorNames = { "water", "plane start", "plane end" };
+        static readonly GUIContent[] MapSizeLabels = { new GUIContent("100%"), new GUIContent("200%"), new GUIContent("400%") };
 
         [SerializeField] LandscapeSettings settings = new LandscapeSettings();
         [SerializeField] Vector2 scroll;
@@ -38,6 +40,9 @@ namespace Dystopographica
         [NonSerialized] Texture2D previewTexture;
         [NonSerialized] bool previewStale;
         [NonSerialized] float planeFraction;
+        [NonSerialized] float waterFraction;
+        [NonSerialized] bool waterWasRaised;
+        [NonSerialized] bool showWaterNote;
         [NonSerialized] int draggedCursor;
         [NonSerialized] List<string> problems;
         [NonSerialized] GUIStyle cursorLabel;
@@ -73,6 +78,14 @@ namespace Dystopographica
             {
                 LoadHeightmap();
                 problems = settings.Problems(source);
+                // Only while nothing is being dragged or typed, so a cursor never jumps out from under the pointer.
+                bool atRest = GUIUtility.hotControl == 0 && !EditorGUIUtility.editingTextField;
+                if (atRest && source != null && previewTexture != null && !previewStale && settings.RaiseWaterOutOfTheDry(waterFraction))
+                {
+                    previewStale = true;
+                    waterWasRaised = true;
+                }
+                showWaterNote = waterWasRaised;
             }
 
             scroll = EditorGUILayout.BeginScrollView(scroll);
@@ -152,9 +165,18 @@ namespace Dystopographica
                 GUILayout.Space(12f);
                 DrawLevels(GUILayoutUtility.GetRect(BarWidth + BarLabelWidth, size, GUILayout.Width(BarWidth + BarLabelWidth), GUILayout.Height(size)));
             }
-            EditorGUILayout.LabelField("Blue is under water and green is the city plane. Drag the three cursors on the bar.", EditorStyles.wordWrappedMiniLabel);
             EditorGUILayout.LabelField(
-                $"The yellow square is the build area, at every map size. The plane covers {planeFraction:P0} of it. The Build area slider sets how much of the map it takes in.",
+                "Blue is under water and green is the city plane. Drag the three cursors on the bar."
+                + (settings.waterPlane ? $" Water covers {waterFraction:P0} of the map." : "")
+                + (settings.speckSize > 0 ? " Brighter green is what the speck filter filled." : ""),
+                EditorStyles.wordWrappedMiniLabel);
+            if (showWaterNote)
+                EditorGUILayout.HelpBox(
+                    "Nothing on the map was below the water cursor, so the landscape would have had no water. "
+                    + "The cursor has been moved up to Plane start: everything lower than the city is now water.",
+                    MessageType.Info);
+            EditorGUILayout.LabelField(
+                $"The yellow square is the {settings.mapSize}% build area, and any fainter squares inside it are the smaller map sizes. The plane covers {planeFraction:P0} of it. The Build area slider sets how much of the map it takes in.",
                 EditorStyles.wordWrappedMiniLabel);
         }
 
@@ -165,23 +187,33 @@ namespace Dystopographica
                 DestroyImmediate(previewTexture);
                 previewTexture = new Texture2D(previewMap.Width, previewMap.Height, TextureFormat.RGBA32, false) { hideFlags = HideFlags.HideAndDontSave };
             }
-            previewTexture.SetPixels32(Preview.Paint(previewMap, settings.PaintedWater, settings.planeStart, settings.planeEnd));
+            Heightmap shown = LandscapeBuilder.WithoutSpecks(previewMap, source.Width, settings);
+            previewTexture.SetPixels32(Preview.Paint(shown, settings.PaintedWater, settings.planeStart, settings.planeEnd, previewMap));
             previewTexture.Apply();
-            planeFraction = Preview.PlaneFraction(previewMap, settings.planeStart, settings.planeEnd, BuildAreaFraction());
+            planeFraction = Preview.PlaneFraction(shown, settings.planeStart, settings.planeEnd, BuildAreaFraction());
+            waterFraction = Preview.WaterFraction(shown, settings.PaintedWater);
             previewStale = false;
         }
 
-        float BuildAreaFraction() => settings.BuildAreaShare;
+        float BuildAreaFraction() => Mathf.Clamp(settings.buildAreaShare, 0.01f, 1f);
 
-        /// <summary>Outlines the game's starting 50 x 50 build area in the middle of the map.</summary>
+        /// <summary>
+        /// Outlines the build area the map is made for, in the middle of the map, and
+        /// more faintly inside it the build areas of the smaller map sizes.
+        /// </summary>
         void DrawBuildArea(Rect image)
         {
-            float edge = image.width * BuildAreaFraction();
-            var square = new Rect(image.center.x - edge / 2, image.center.y - edge / 2, edge, edge);
-            EditorGUI.DrawRect(new Rect(square.x, square.y, square.width, 1f), Color.yellow);
-            EditorGUI.DrawRect(new Rect(square.x, square.yMax - 1f, square.width, 1f), Color.yellow);
-            EditorGUI.DrawRect(new Rect(square.x, square.y, 1f, square.height), Color.yellow);
-            EditorGUI.DrawRect(new Rect(square.xMax - 1f, square.y, 1f, square.height), Color.yellow);
+            foreach (int size in LandscapeSettings.MapSizes)
+            {
+                if (size > settings.mapSize) continue;
+                float edge = image.width * BuildAreaFraction() * LandscapeSettings.BuildAreaScale(size) / LandscapeSettings.BuildAreaScale(settings.mapSize);
+                var square = new Rect(image.center.x - edge / 2, image.center.y - edge / 2, edge, edge);
+                Color colour = size == settings.mapSize ? Color.yellow : new Color(1f, 0.92f, 0.016f, 0.4f);
+                EditorGUI.DrawRect(new Rect(square.x, square.y, square.width, 1f), colour);
+                EditorGUI.DrawRect(new Rect(square.x, square.yMax - 1f, square.width, 1f), colour);
+                EditorGUI.DrawRect(new Rect(square.x, square.y, 1f, square.height), colour);
+                EditorGUI.DrawRect(new Rect(square.xMax - 1f, square.y, 1f, square.height), colour);
+            }
         }
 
         /// <summary>
@@ -253,6 +285,7 @@ namespace Dystopographica
         {
             settings.MoveCursor(draggedCursor, value);
             previewStale = true;
+            waterWasRaised = false;
             Repaint();
         }
 
@@ -269,21 +302,28 @@ namespace Dystopographica
 
             settings.waterPlane = EditorGUILayout.Toggle(new GUIContent("Water", "Whether the map has water. Off makes a dry map: no water surface, and the water cursor is ignored."), settings.waterPlane);
             using (new EditorGUI.DisabledScope(!settings.waterPlane))
-            {
                 CursorSlider(LandscapeSettings.Water, settings.water, "Water level", "Where the shoreline is: everything lower than this is under water. Put it right under plane start for a quay, lower for a sloping shore.");
-                settings.waterDepth = Mathf.Max(0f, EditorGUILayout.FloatField(new GUIContent("Water depth", "How far the water surface lies below the city plane, in units. A small building is about 1 unit tall."), settings.waterDepth));
-            }
 
-            float share = settings.BuildAreaShare * 100f;
+            settings.mapSize = EditorGUILayout.IntPopup(
+                new GUIContent("Map size", "The game's map size this landscape is made for. The game never scales a landscape, it only widens the build area, so the map is sized to fill the build area of one size. A 400% map also works at 100% and 200%, where the city sits on the middle of it. A 100% map is offered at 100% only. A 200% map can be chosen at 400% too, but will show bare ground at its edges there."),
+                settings.mapSize, MapSizeLabels, LandscapeSettings.MapSizes);
+            float share = BuildAreaFraction() * 100f;
             float newShare = EditorGUILayout.Slider(new GUIContent("Build area (% of map)", "How much of the map's width the build area covers. At 100 the whole map is the build area. Lower it to leave scenery around the city: at 50 the build area is the middle half."), share, 5f, 100f);
-            if (newShare != share) settings.BuildAreaShare = newShare / 100f;
-            EditorGUILayout.LabelField(" ", "In the game the map is " + string.Join(", ", settings.MapSizes().ConvertAll(size => $"{settings.ForMapSize(size).worldSize:0.#} units wide at {size}%")) + ".", EditorStyles.wordWrappedMiniLabel);
-            settings.peakHeight = Mathf.Max(0f, EditorGUILayout.FloatField(new GUIContent("Peak height", "How far the heightmap's highest point rises above the city plane, in units, at the 100% map size. The larger landscapes are scaled up, so theirs is higher."), settings.peakHeight));
-            settings.lowestDepth = Mathf.Max(0f, EditorGUILayout.FloatField(new GUIContent("Lowest depth", "On a dry map, how far the heightmap's lowest point drops below the city plane, in units. With water, this is the sea bed: everything under water lies this far down. Keep it well over half a unit, or the game marks the water with red crosses as ground you cannot build on."), settings.lowestDepth));
-            settings.smoothing = EditorGUILayout.Slider(new GUIContent("Smoothing", "Blurs the heightmap by this many pixels before mapping it. Clears specks of noise off the city plane. 0 is off."), settings.smoothing, 0f, 10f);
+            if (newShare != share) settings.buildAreaShare = newShare / 100f;
+            EditorGUILayout.LabelField(" ", $"In the game the map is {settings.WorldSize:0.#} units wide, and the {settings.mapSize}% build area is {settings.BuildArea:0.#}.", EditorStyles.wordWrappedMiniLabel);
+            settings.peakHeight = Mathf.Max(0f, EditorGUILayout.FloatField(new GUIContent("Peak height", "How far the heightmap's highest point rises above the city plane, in units."), settings.peakHeight));
+            // Only a dry map has one. With water, the sea bed lies at a fixed level just under it.
+            if (!settings.waterPlane)
+                settings.lowestDepth = Mathf.Max(0f, EditorGUILayout.FloatField(new GUIContent("Lowest depth", "How far the heightmap's lowest point drops below the city plane, in units."), settings.lowestDepth));
+            settings.speckSize = EditorGUILayout.IntSlider(new GUIContent("Fill specks under (px)", "Fills small holes in the city plane without blurring anything. Any patch of water, shore or hill smaller than this many heightmap pixels, with plane all the way round it, becomes plane. The preview shows what it filled in a brighter green. 0 is off. The preview is a smaller picture, so it shows the effect only roughly for limits under about 30."), settings.speckSize, 0, LargestSpeckSize);
+            settings.smoothing = EditorGUILayout.Slider(new GUIContent("Smoothing", "Blurs the heightmap by this many pixels before mapping it. Clears specks of noise off the city plane. 0 is off."),settings.smoothing, 0f, 10f);
             settings.knee = EditorGUILayout.Slider(new GUIContent("Edge softness", "How gently terrain leaves the city plane, as a share of the heightmap's range. 0 gives a hard crease."), settings.knee, 0f, 0.25f);
 
-            if (EditorGUI.EndChangeCheck()) previewStale = true;
+            if (EditorGUI.EndChangeCheck())
+            {
+                previewStale = true;
+                waterWasRaised = false;
+            }
         }
 
         void CursorSlider(int cursor, float value, string label, string tooltip)
@@ -331,16 +371,10 @@ namespace Dystopographica
                 if (GUILayout.Button("Clear", GUILayout.Width(50f))) settings.thumbnailPath = "";
             }
 
-            const string sizeTip = "The game does not scale a landscape for a larger map size, it only widens the build area. "
-                + "So each size gets a landscape of its own: the same map, scaled up to fill that build area.";
-            settings.size200 = EditorGUILayout.Toggle(new GUIContent("200% landscape", sizeTip), settings.size200);
-            settings.size400 = EditorGUILayout.Toggle(new GUIContent("400% landscape", sizeTip), settings.size400);
-            if (settings.size200 || settings.size400)
-                EditorGUILayout.LabelField(
-                    $"The game will list {settings.MapSizes().Count} landscapes, named like \"{settings.DisplayNameFor(100)}\". Pick the one that matches the city's map size.",
-                    EditorStyles.wordWrappedMiniLabel);
-            settings.hideDefaultGrid = EditorGUILayout.Toggle(new GUIContent("Hide default grid", "Hides the game's own flat grid plane."), settings.hideDefaultGrid);
-            settings.hideDefaultLandscape = EditorGUILayout.Toggle(new GUIContent("Hide default mountains", "Hides the mountains the game normally generates around the city."), settings.hideDefaultLandscape);
+            using (new EditorGUI.DisabledScope(!settings.waterPlane))
+                settings.normalWater = EditorGUILayout.ToggleLeft(
+                    new GUIContent("Also make a version with normal water", $"The map's water ripples and mirrors what stands around it. Tick this and the mod holds the same map a second time, with flat, still water like the game's example landscape. The game lists it as \"{settings.DisplayName} (normal water)\", and the player picks."),
+                    settings.normalWater);
         }
 
         void DrawActions()
@@ -354,7 +388,7 @@ namespace Dystopographica
                 {
                     if (GUILayout.Button(new GUIContent("Make landscape", "Writes the landscape into this project, replacing the last one made for this mod."), GUILayout.Height(30f)))
                         Run(install: false);
-                    if (GUILayout.Button(new GUIContent("Compile and install", "Makes the landscape if anything changed, compiles the mod, and copies it into the game's Mods folder."), GUILayout.Height(30f)))
+                    if (GUILayout.Button(new GUIContent("Compile and install", "Makes the landscape, compiles the mod, and copies it into the game's Mods folder."), GUILayout.Height(30f)))
                         Run(install: true);
                 }
                 if (GUILayout.Button("Open Mods folder", GUILayout.Height(30f), GUILayout.Width(120f))) ModKitBridge.OpenModsFolder();

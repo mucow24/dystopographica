@@ -7,13 +7,16 @@ namespace Dystopographica
     {
         static readonly Color WaterTint = new Color(0.10f, 0.35f, 0.85f);
         static readonly Color PlaneTint = new Color(0.15f, 0.75f, 0.25f);
+        static readonly Color FilledTint = new Color(0.85f, 1f, 0.35f);
 
         /// <summary>
         /// Colours a normalized map: blue below the water cursor, green inside the city
         /// plane band, grey elsewhere, all lighter with height. The result is in Unity's
-        /// texture order, bottom row first.
+        /// texture order, bottom row first. Given the same map as it was before the speck
+        /// filter ran, the pixels the filter pulled into the plane are a brighter,
+        /// yellower green, so its effect can be seen.
         /// </summary>
-        public static Color32[] Paint(Heightmap normalized, float water, float planeStart, float planeEnd)
+        public static Color32[] Paint(Heightmap normalized, float water, float planeStart, float planeEnd, Heightmap beforeFilling = null)
         {
             int width = normalized.Width, height = normalized.Height;
             var pixels = new Color32[width * height];
@@ -24,8 +27,15 @@ namespace Dystopographica
                     float value = normalized.Values[y * width + x];
                     float shade = 0.12f + 0.8f * Mathf.Clamp01(value);
                     var colour = new Color(shade, shade, shade);
-                    if (value < water) colour = Color.Lerp(colour, WaterTint, 0.65f);
-                    else if (value >= planeStart && value <= planeEnd) colour = Color.Lerp(colour, PlaneTint, 0.65f);
+                    if (value < water)
+                    {
+                        colour = Color.Lerp(colour, WaterTint, 0.65f);
+                    }
+                    else if (value >= planeStart && value <= planeEnd)
+                    {
+                        bool filled = beforeFilling != null && beforeFilling.Values[y * width + x] != value;
+                        colour = Color.Lerp(colour, filled ? FilledTint : PlaneTint, 0.65f);
+                    }
                     pixels[(height - 1 - y) * width + x] = colour;
                 }
             }
@@ -51,6 +61,15 @@ namespace Dystopographica
                 }
             }
             return result;
+        }
+
+        /// <summary>How much of the map is under water, from 0 to 1: the share of it below the water cursor.</summary>
+        public static float WaterFraction(Heightmap normalized, float water)
+        {
+            int under = 0;
+            foreach (float value in normalized.Values)
+                if (value < water) under++;
+            return normalized.Values.Length == 0 ? 0f : under / (float)normalized.Values.Length;
         }
 
         /// <summary>

@@ -35,72 +35,74 @@ namespace Dystopographica
 
         public static void OpenModsFolder() => ModKitEditorHelper.ShowLocalModInstallLocation();
 
-        public static bool HasMod(string folder) => AssetDatabase.LoadAssetAtPath<ModContentManifest>(folder + ManifestFile) != null;
-
         /// <summary>
         /// Creates or updates the ModKit assets that describe the mod: its manifest, its
-        /// landscape collection, and a landscape definition for each map size that has a
-        /// prefab. `prefabs` maps a map size (100, 200, 400) to its landscape prefab.
+        /// landscape collection, and a landscape definition for each kind of water that
+        /// has a prefab. The game lists them in the collection's order: ours first.
         /// </summary>
-        public static void WriteMod(string folder, LandscapeSettings settings, IReadOnlyDictionary<int, GameObject> prefabs, Texture2D thumbnail)
+        public static void WriteMod(string folder, LandscapeSettings settings, IReadOnlyDictionary<WaterKind, GameObject> prefabs, Texture2D thumbnail)
         {
-            var manifest = FindOrCreate<ModContentManifest>(folder + ManifestFile, out _);
-            var collection = FindOrCreate<ModLandscapeCollection>(folder + "/Landscape Collection.asset", out _);
-
+            // Each object is filled in completely before its file is written. Creating a
+            // file first and filling it in afterwards leaves a moment when the file holds
+            // default values, and if Unity reloads it in that moment the real ones are lost.
+            string manifestPath = folder + ManifestFile, collectionPath = folder + "/Landscape Collection.asset";
+            var manifest = LoadOrNew<ModContentManifest>(manifestPath, out bool isNewManifest);
             // Ids are made once and never change, because saved cities refer to them.
             if (string.IsNullOrEmpty(manifest.Id)) manifest.Id = Guid.NewGuid().ToString();
+
+            var definitions = new List<ModLandscapeDefinition>();
+            foreach (WaterKind kind in new[] { WaterKind.Custom, WaterKind.Normal })
+            {
+                string path = $"{folder}/Landscape Definition{LandscapeSettings.FileSuffix(kind)}.asset";
+                if (!prefabs.TryGetValue(kind, out GameObject prefab))
+                {
+                    // Left over from a run that asked for it.
+                    if (File.Exists(path)) AssetDatabase.DeleteAsset(path);
+                    continue;
+                }
+
+                var landscape = LoadOrNew<ModLandscapeDefinition>(path, out bool isNew);
+                // These are private fields, so they are set the way the Inspector sets them.
+                var fields = new SerializedObject(landscape);
+                // A new definition starts with the ModKit's placeholder id, the same in every mod.
+                if (isNew)
+                {
+                    string id = LandscapeSettings.Slug(settings.DisplayName) + "-" + manifest.Id.Substring(0, 8);
+                    fields.FindProperty("id").stringValue = kind == WaterKind.Custom ? id + "-custom-water" : id;
+                }
+                fields.FindProperty("name").stringValue = settings.DisplayNameFor(kind);
+                fields.FindProperty("thumbnail").objectReferenceValue = thumbnail;
+                fields.FindProperty("landscapeResource.m_AssetGUID").stringValue = AssetDatabase.AssetPathToGUID(AssetDatabase.GetAssetPath(prefab));
+                // The landscape takes the place of the game's own grid and mountains.
+                fields.FindProperty("disableDefaultGridMesh").boolValue = true;
+                fields.FindProperty("disableDefaultLandscape").boolValue = true;
+                fields.FindProperty("allowLargerMapSizes").boolValue = settings.AllowsLargerMapSizes;
+                fields.ApplyModifiedPropertiesWithoutUndo();
+                Store(landscape, path, isNew);
+                definitions.Add(landscape);
+            }
+
+            var collection = LoadOrNew<ModLandscapeCollection>(collectionPath, out bool isNewCollection);
+            var collectionFields = new SerializedObject(collection);
+            SerializedProperty landscapes = collectionFields.FindProperty("landscapes");
+            landscapes.arraySize = definitions.Count;
+            for (int i = 0; i < definitions.Count; i++) landscapes.GetArrayElementAtIndex(i).objectReferenceValue = definitions[i];
+            collectionFields.ApplyModifiedPropertiesWithoutUndo();
+            Store(collection, collectionPath, isNewCollection);
+
             manifest.ModKitVersion = ModKitVersion.Version;
             manifest.Name = settings.modName;
             manifest.Author = settings.author;
             manifest.Version = settings.version;
             manifest.MinorVersion = settings.minorVersion;
             manifest.PreviewImage = thumbnail;
-            EditorUtility.SetDirty(manifest);
-
-            // The rest are private fields, so they are set the way the Inspector sets them.
             var manifestFields = new SerializedObject(manifest);
             manifestFields.FindProperty("landscapeCollection").objectReferenceValue = collection;
             SerializedProperty includes = manifestFields.FindProperty("includes");
             includes.arraySize = 1;
             includes.GetArrayElementAtIndex(0).objectReferenceValue = AuthorConfig().baseContentInclude;
             manifestFields.ApplyModifiedPropertiesWithoutUndo();
-
-            var definitions = new List<ModLandscapeDefinition>();
-            foreach (int percent in LandscapeSettings.AllMapSizes)
-            {
-                string path = $"{folder}/Landscape Definition{LandscapeSettings.FileSuffix(percent)}.asset";
-                if (!prefabs.TryGetValue(percent, out GameObject prefab))
-                {
-                    // Left over from a run that had this size ticked.
-                    if (File.Exists(path)) AssetDatabase.DeleteAsset(path);
-                    continue;
-                }
-
-                var landscape = FindOrCreate<ModLandscapeDefinition>(path, out bool isNew);
-                var fields = new SerializedObject(landscape);
-                // A new definition starts with the ModKit's placeholder id, the same in every mod.
-                if (isNew)
-                {
-                    string id = LandscapeSettings.Slug(settings.DisplayName) + "-" + manifest.Id.Substring(0, 8);
-                    fields.FindProperty("id").stringValue = percent == 100 ? id : id + "-" + percent;
-                }
-                fields.FindProperty("name").stringValue = settings.DisplayNameFor(percent);
-                fields.FindProperty("thumbnail").objectReferenceValue = thumbnail;
-                fields.FindProperty("landscapeResource.m_AssetGUID").stringValue = AssetDatabase.AssetPathToGUID(AssetDatabase.GetAssetPath(prefab));
-                fields.FindProperty("disableDefaultGridMesh").boolValue = settings.hideDefaultGrid;
-                fields.FindProperty("disableDefaultLandscape").boolValue = settings.hideDefaultLandscape;
-                // The 100% landscape only fills the 100% build area. A larger one cannot
-                // refuse sizes above its own: the flag is all or nothing.
-                fields.FindProperty("allowLargerMapSizes").boolValue = percent > 100;
-                fields.ApplyModifiedPropertiesWithoutUndo();
-                definitions.Add(landscape);
-            }
-
-            var collectionFields = new SerializedObject(collection);
-            SerializedProperty landscapes = collectionFields.FindProperty("landscapes");
-            landscapes.arraySize = definitions.Count;
-            for (int i = 0; i < definitions.Count; i++) landscapes.GetArrayElementAtIndex(i).objectReferenceValue = definitions[i];
-            collectionFields.ApplyModifiedPropertiesWithoutUndo();
+            Store(manifest, manifestPath, isNewManifest);
         }
 
         /// <summary>
@@ -181,15 +183,26 @@ namespace Dystopographica
             return config;
         }
 
-        static T FindOrCreate<T>(string path, out bool isNew) where T : ScriptableObject
+        /// <summary>The asset at a path, or a new object that is not a file yet.</summary>
+        static T LoadOrNew<T>(string path, out bool isNew) where T : ScriptableObject
         {
             var asset = AssetDatabase.LoadAssetAtPath<T>(path);
             isNew = asset == null;
-            if (!isNew) return asset;
+            return isNew ? ScriptableObject.CreateInstance<T>() : asset;
+        }
 
-            asset = ScriptableObject.CreateInstance<T>();
-            AssetDatabase.CreateAsset(asset, path);
-            return asset;
+        /// <summary>Writes an object to its file at once: a new file for a new object, the same file otherwise.</summary>
+        static void Store(UnityEngine.Object asset, string path, bool isNew)
+        {
+            if (isNew)
+            {
+                AssetDatabase.CreateAsset(asset, path);
+            }
+            else
+            {
+                EditorUtility.SetDirty(asset);
+                AssetDatabase.SaveAssetIfDirty(asset);
+            }
         }
     }
 }

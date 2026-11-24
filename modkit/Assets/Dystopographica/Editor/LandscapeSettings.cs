@@ -7,6 +7,19 @@ using UnityEngine;
 namespace Dystopographica
 {
     /// <summary>
+    /// The water a landscape has. A map with water gets the custom kind. On request the
+    /// mod holds the same map a second time with the normal kind, and the player picks.
+    /// </summary>
+    public enum WaterKind
+    {
+        /// <summary>A flat, still surface drawn with Unity's own shader. Also stands for a dry map's one landscape.</summary>
+        Normal,
+
+        /// <summary>A rippling, reflective surface drawn with our shader.</summary>
+        Custom,
+    }
+
+    /// <summary>
     /// Everything the Make landscape window asks for. A copy is saved with each mod as
     /// its preset, so the window can pick up where it left off.
     /// </summary>
@@ -19,27 +32,37 @@ namespace Dystopographica
         /// <summary>The width of the game's build area at the 100% map size, in units.</summary>
         public const float BuildAreaSize = 50f;
 
-        /// <summary>Every map size the game offers.</summary>
-        public static readonly int[] AllMapSizes = { 100, 200, 400 };
+        /// <summary>The map sizes the game offers, as percentages.</summary>
+        public static readonly int[] MapSizes = { 100, 200, 400 };
 
         public string heightmapPath = "";
 
         // The cursors, each from 0 (the heightmap's lowest point) to 1 (its highest).
-        public float water = 0.2f;
+        // The water starts at the plane start: everything lower than the city is water.
+        public float water = 0.4f;
         public float planeStart = 0.4f;
         public float planeEnd = 0.6f;
 
-        // World units, at the 100% map size. The game's build area is then 50 x 50, so
-        // by default the whole map is the build area. The two depths are measured down
-        // from the city plane.
-        public float worldSize = BuildAreaSize;
+        // The map size the landscape is made for, and how much of the map's width that
+        // size's build area covers. The game never scales a landscape, it only widens
+        // the build area, so the map is sized to suit one map size: by default the
+        // largest, which also works at the smaller ones, on the middle of the map.
+        public int mapSize = 400;
+        public float buildAreaShare = 1f;
+
+        // World units, measured up and down from the city plane. The lowest depth shapes
+        // a dry map only: with water, the sea bed lies at a fixed level. See BedDrop.
         public float peakHeight = 20f;
         public float lowestDepth = 2f;
-        public float waterDepth = 0.7f;
 
         public float smoothing = 1f;
+        public int speckSize;
         public float knee = 0.01f;
         public bool waterPlane = true;
+
+        // A map with water is one landscape, with our own rippling, mirroring water.
+        // On: the mod also holds the same map with flat, still water, and the player picks.
+        public bool normalWater;
 
         public string modName = "";
         public string author = "";
@@ -48,11 +71,36 @@ namespace Dystopographica
 
         public string landscapeName = "";
         public string thumbnailPath = "";
-        // Whether to also make a landscape for the 200% and 400% map sizes.
-        public bool size200 = true;
-        public bool size400 = true;
-        public bool hideDefaultGrid = true;
-        public bool hideDefaultLandscape = true;
+
+        /// <summary>
+        /// Where the Night City mod draws its roads and its water, and where its terrain
+        /// lies under that water, in units above the level the game stands buildings on
+        /// (y = 0). Measured from its meshes.
+        /// </summary>
+        public const float NightCityGround = 0.18f, NightCityWater = 0.118f, NightCitySeaBed = -0.08f;
+
+        /// <summary>
+        /// How far above the level buildings stand on the city plane is drawn. The game
+        /// lets a building stand wherever a landscape's colliders are at that level, and
+        /// ours has one flat sheet there under the whole map, as Night City has. So
+        /// some buildings stand over the water, and with the land drawn at their level
+        /// and the water below it those hover. The land is drawn a little higher, as
+        /// Night City draws it, and the water between the two: every building is then
+        /// sunk a little into what is drawn, and one over the water stands in it. A dry
+        /// map has no water to stand in and is left alone.
+        /// </summary>
+        public float GroundLift => waterPlane ? NightCityGround : 0f;
+
+        /// <summary>How far below the drawn city plane the water lies: the little that Night City's levels leave.</summary>
+        public float WaterDrop => NightCityGround - NightCityWater;
+
+        /// <summary>
+        /// How far below the drawn city plane the sea bed lies: the little that Night
+        /// City's levels leave. Nothing is built on the terrain, so the bed has no need
+        /// to be deep, and a deep one made the water look like a canyon from above. On
+        /// a dry map this is the heightmap's lowest point, at the lowest depth.
+        /// </summary>
+        public float BedDrop => waterPlane ? NightCityGround - NightCitySeaBed : lowestDepth;
 
         public string Folder => "Assets/" + modName;
 
@@ -64,15 +112,42 @@ namespace Dystopographica
         public string DisplayName => string.IsNullOrWhiteSpace(landscapeName) ? modName : landscapeName;
 
         /// <summary>
-        /// How much of the map's width the build area covers, from 0 to 1. At 1 the whole
-        /// map is the build area; less leaves scenery around it. It is the same at every
-        /// map size, which is why the window offers this and not the world size.
+        /// How much wider the build area is at a map size than at 100%. The percentage is
+        /// its area, so the width grows by the square root: seen in the game, 200% is about
+        /// 1.4 times as wide and 400% twice.
         /// </summary>
-        public float BuildAreaShare
-        {
-            get => worldSize > BuildAreaSize ? BuildAreaSize / worldSize : 1f;
-            set => worldSize = BuildAreaSize / Mathf.Clamp(value, 0.01f, 1f);
-        }
+        public static float BuildAreaScale(int percent) => Mathf.Sqrt(percent / 100f);
+
+        /// <summary>The width of the build area the map is made for, in units.</summary>
+        public float BuildArea => BuildAreaSize * BuildAreaScale(mapSize);
+
+        /// <summary>
+        /// The width of the whole map in the game, in units: wide enough that the build
+        /// area is its share of it.
+        /// </summary>
+        public float WorldSize => BuildArea / Mathf.Clamp(buildAreaShare, 0.01f, 1f);
+
+        /// <summary>
+        /// What the landscapes tell the game. The flag is all or nothing: a map made for
+        /// 200% has to allow 400% as well, and will show bare ground at its edges there.
+        /// </summary>
+        public bool AllowsLargerMapSizes => mapSize > 100;
+
+        /// <summary>
+        /// The landscapes the mod holds, in the order the game lists them: the map with
+        /// our own water, then with normal water if that is asked for. Or a single dry one.
+        /// </summary>
+        public List<WaterKind> Landscapes() =>
+            !waterPlane ? new List<WaterKind> { WaterKind.Normal }
+            : normalWater ? new List<WaterKind> { WaterKind.Custom, WaterKind.Normal }
+            : new List<WaterKind> { WaterKind.Custom };
+
+        /// <summary>The name the game lists a landscape under. Only the extra one with normal water says which it is.</summary>
+        public string DisplayNameFor(WaterKind kind) =>
+            waterPlane && kind == WaterKind.Normal ? DisplayName + " (normal water)" : DisplayName;
+
+        /// <summary>What sets a landscape's asset files apart: "Landscape.prefab", "Landscape Custom Water.prefab".</summary>
+        public static string FileSuffix(WaterKind kind) => kind == WaterKind.Custom ? " Custom Water" : "";
 
         public void Write(string path)
         {
@@ -93,54 +168,18 @@ namespace Dystopographica
             }
         }
 
-        /// <summary>The map sizes a landscape is made for: 100% always, and the larger ones that are ticked.</summary>
-        public List<int> MapSizes()
-        {
-            var sizes = new List<int> { 100 };
-            if (size200) sizes.Add(200);
-            if (size400) sizes.Add(400);
-            return sizes;
-        }
-
-        /// <summary>
-        /// How much wider the build area is at a map size than at 100%. The percentage is
-        /// its area, so the width grows by the square root: seen in the game, 200% is about
-        /// 1.4 times as wide and 400% twice.
-        /// </summary>
-        public static float BuildAreaScale(int percent) => Mathf.Sqrt(percent / 100f);
-
-        /// <summary>
-        /// These settings scaled up for a larger map size. The game never scales a
-        /// landscape, it only widens the build area, so the landscape for a larger size is
-        /// the same map made bigger: wider, and taller and deeper to keep its shape. The
-        /// water surface stays as far below the city as it was.
-        /// </summary>
-        public LandscapeSettings ForMapSize(int percent)
-        {
-            float scale = BuildAreaScale(percent);
-            LandscapeSettings sized = FromJson(ToJson());
-            sized.worldSize = worldSize * scale;
-            sized.peakHeight = peakHeight * scale;
-            sized.lowestDepth = waterPlane ? waterDepth + (lowestDepth - waterDepth) * scale : lowestDepth * scale;
-            return sized;
-        }
-
-        /// <summary>The name the game lists a size's landscape under.</summary>
-        public string DisplayNameFor(int percent) => MapSizes().Count > 1 ? $"{DisplayName} ({percent}%)" : DisplayName;
-
-        /// <summary>What sets a size's asset files apart: "Landscape.prefab", "Landscape 200.prefab".</summary>
-        public static string FileSuffix(int percent) => percent == 100 ? "" : " " + percent;
-
         /// <summary>The value below which the preview is blue. Nothing is, on a dry map.</summary>
         public float PaintedWater => waterPlane ? water : 0f;
 
         public HeightCurve Curve() =>
-            new HeightCurve(planeStart, planeEnd, peakHeight, lowestDepth, knee, water, waterPlane ? waterDepth : 0f);
+            new HeightCurve(planeStart, planeEnd, peakHeight, BedDrop, knee, water, waterPlane ? WaterDrop : 0f);
 
         /// <summary>
-        /// Moves one cursor as far towards `value` as its neighbours allow. Cursors never
-        /// cross. On a dry map the water cursor is out of use, so it does not hold the
-        /// plane start back and is carried along under it.
+        /// Moves one cursor towards `value`. Cursors never cross. The plane start is the
+        /// one that leads: the water cursor cannot rise past it, but it pushes the water
+        /// cursor down ahead of it, and water that sits right at the plane start stays
+        /// with it both ways. That keeps "everything lower than the city is water", the
+        /// usual wish, until the water cursor itself is pulled lower.
         /// </summary>
         public void MoveCursor(int cursor, float value)
         {
@@ -150,13 +189,30 @@ namespace Dystopographica
             }
             else if (cursor == PlaneStart)
             {
-                planeStart = Mathf.Clamp(value, waterPlane ? water : 0f, planeEnd);
-                water = Mathf.Min(water, planeStart);
+                bool together = water == planeStart;
+                planeStart = Mathf.Clamp(value, 0f, planeEnd);
+                water = together ? planeStart : Mathf.Min(water, planeStart);
             }
             else
             {
                 planeEnd = Mathf.Clamp(value, planeStart, 1f);
             }
+        }
+
+        /// <summary>The share of the map under water below which there is, in effect, none: a few stray pixels.</summary>
+        public const float NoWaterToSpeakOf = 0.0001f;
+
+        /// <summary>
+        /// Water switched on with nothing under it gives a map with no water at all, which
+        /// nobody wants. Given the share of the map that is under water, this puts a water
+        /// cursor that has nothing below it back at the plane start, where everything
+        /// lower than the city is water. It says whether it moved the cursor.
+        /// </summary>
+        public bool RaiseWaterOutOfTheDry(float waterFraction)
+        {
+            if (!waterPlane || water >= planeStart || waterFraction >= NoWaterToSpeakOf) return false;
+            water = planeStart;
+            return true;
         }
 
         /// <summary>The cursor a click at `value` should pick up.</summary>
@@ -187,12 +243,7 @@ namespace Dystopographica
             else if (Directory.Exists(Folder) && !Directory.Exists(PresetFolder))
                 problems.Add($"{Folder} already exists and was not made by this tool. Choose another mod name.");
 
-            if (worldSize <= 0f) problems.Add("World size must be more than zero.");
-
-            if (waterPlane && waterDepth <= 0f)
-                problems.Add("Water depth must be more than zero, or the water would lie level with the city.");
-            else if (waterPlane && lowestDepth <= waterDepth)
-                problems.Add("Lowest depth must be more than the water depth, so the sea bed is under the water.");
+            if (Array.IndexOf(MapSizes, mapSize) < 0) problems.Add("Map size must be 100, 200 or 400, the sizes the game offers.");
             return problems;
         }
 
@@ -218,9 +269,6 @@ namespace Dystopographica
             string path = new LandscapeSettings { modName = modName }.PresetPath;
             return File.Exists(path) ? FromJson(File.ReadAllText(path)) : null;
         }
-
-        /// <summary>True when the mod on disk was made with exactly these settings.</summary>
-        public bool MatchesSavedPreset() => File.Exists(PresetPath) && File.ReadAllText(PresetPath) == ToJson();
 
         /// <summary>Lower-case letters, digits and single dashes: safe as a landscape id and as a file name.</summary>
         public static string Slug(string name)

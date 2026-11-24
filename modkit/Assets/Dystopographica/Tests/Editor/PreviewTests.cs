@@ -27,6 +27,24 @@ namespace Dystopographica.Tests
             Assert.IsTrue(IsGrey(pixels[4]), "hills");
         }
 
+        // A filled speck simply turning green is easy to miss among all the other green.
+        // Given the map as it was before the speck filter, the preview marks what changed.
+        [Test]
+        public void Paint_MarksWhatTheSpeckFilterFilled_InABrighterGreen()
+        {
+            var before = new Heightmap(3, 1, new[] { 0.5f, 0.1f, 0.5f });
+            Heightmap after = Specks.FillPlane(new Heightmap(3, 3, new[] { 0.5f, 0.5f, 0.5f, 0.5f, 0.1f, 0.5f, 0.5f, 0.5f, 0.5f }), PlaneStart, PlaneEnd, 2);
+            var filledRow = new Heightmap(3, 1, new[] { after[0, 1], after[1, 1], after[2, 1] });
+
+            Color32[] marked = Preview.Paint(filledRow, Water, PlaneStart, PlaneEnd, before);
+            Color32[] unmarked = Preview.Paint(filledRow, Water, PlaneStart, PlaneEnd);
+
+            Assert.IsTrue(IsGreen(marked[1]), "still plane");
+            Assert.Greater(marked[1].r + marked[1].g + marked[1].b, marked[0].r + marked[0].g + marked[0].b + 100, "but clearly brighter than plane that was always there");
+            Assert.AreEqual(unmarked[0], marked[0], "untouched pixels look the same either way");
+            Assert.IsTrue(IsGreen(unmarked[1]) && unmarked[1].r < marked[1].r, "and nothing is marked unless asked");
+        }
+
         [Test]
         public void Paint_HigherGroundIsLighter()
         {
@@ -80,6 +98,20 @@ namespace Dystopographica.Tests
                     Assert.AreEqual(x / 2, result[y * 8 + x].g, $"column of {x}, {y}");
                 }
             }
+        }
+
+        // A map can be made with its water cursor under everything, so that a river in
+        // the heightmap comes out as dry ground a hair below the city. The window uses
+        // this to say so.
+        [Test]
+        public void WaterFraction_IsTheShareOfTheMapBelowTheWaterCursor()
+        {
+            var map = new Heightmap(4, 1, new[] { 0.1f, 0.3f, 0.5f, 0.9f });
+
+            Assert.AreEqual(0.25f, Preview.WaterFraction(map, 0.2f));
+            Assert.AreEqual(0.5f, Preview.WaterFraction(map, 0.4f));
+            Assert.AreEqual(0f, Preview.WaterFraction(map, 0.1f), "a pixel exactly at the cursor is the shoreline, not water");
+            Assert.AreEqual(0f, Preview.WaterFraction(map, 0f));
         }
 
         [Test]
