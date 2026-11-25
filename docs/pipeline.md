@@ -558,8 +558,17 @@ Assets/<ModName>/
 
    Colliders decide where the game lets a building stand. Ours is the Night City
    layout (§3.7): the terrain and the water carry no collider, and a child
-   `Buildable Plane`, Unity's Plane again with nothing left but its collider, lies
-   at y = 0 under the whole map. Large buildings can then stand over the water,
+   `Buildable Plane`, a box collider whose top is at y = 0, lies under the whole
+   map. Until 2026-11-25 it was Unity's Plane mesh with nothing left but its
+   collider, and the game's small fill-in buildings stayed off the northern half
+   of every map at every size, as they do on Night City at 400%. The game's own
+   landscape and our maps from before the sheet filled everywhere. A ray dropped
+   on that mesh lands at −5e-17 north of the middle and +5e-17 south of it, so the
+   game refuses its small buildings ground that is below zero by any amount. A
+   probe map with strips of different colliders showed it in the game: the mesh
+   was bare in its northern half, bare in its southern half when turned round,
+   bare all over at −0.007 and full at +0.007, and a box with its top at zero was
+   full. The box lands at zero exactly, which a test holds it to. Large buildings can then stand over the water,
    hard against a shore and inside a hill. The example's layout was the tool's
    first: the terrain has its `TerrainCollider` and the water keeps its own, so a
    building needs level city plane under all of it, which makes shores awkward: the
