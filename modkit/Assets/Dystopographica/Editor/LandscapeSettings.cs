@@ -171,6 +171,25 @@ namespace Dystopographica
         /// <summary>The value below which the preview is blue. Nothing is, on a dry map.</summary>
         public float PaintedWater => waterPlane ? water : 0f;
 
+        /// <summary>
+        /// The settings to make a map with. For a heightmap, these. A painted map says
+        /// for itself what is water and what is plane, so for one of those it is a copy
+        /// with the cursors at the painted map's fixed levels, and with water if
+        /// something is painted blue. The settings themselves keep their cursors, for
+        /// the next heightmap.
+        /// </summary>
+        public LandscapeSettings For(Heightmap source)
+        {
+            if (source == null || !source.IsPainted) return this;
+
+            LandscapeSettings copy = FromJson(ToJson());
+            copy.water = source.HasPaintedWater ? PaintedMap.Water : 0f;
+            copy.planeStart = PaintedMap.PlaneStart;
+            copy.planeEnd = PaintedMap.PlaneEnd;
+            copy.waterPlane = source.HasPaintedWater;
+            return copy;
+        }
+
         public HeightCurve Curve() =>
             new HeightCurve(planeStart, planeEnd, peakHeight, BedDrop, knee, water, waterPlane ? WaterDrop : 0f);
 

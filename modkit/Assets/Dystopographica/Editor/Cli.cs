@@ -50,8 +50,9 @@ namespace Dystopographica
         /// <summary>Writes the window's preview of a preset to a PNG file. Arguments: preset, out.</summary>
         public static void RenderPreview()
         {
-            LandscapeSettings settings = LandscapeSettings.FromJson(File.ReadAllText(Argument("preset")));
-            Heightmap source = HeightmapFile.Load(settings.heightmapPath).Normalized();
+            LandscapeSettings asEntered = LandscapeSettings.FromJson(File.ReadAllText(Argument("preset")));
+            Heightmap source = HeightmapFile.Load(asEntered.heightmapPath).Normalized();
+            LandscapeSettings settings = asEntered.For(source);
             Heightmap unfilled = LandscapeBuilder.PreviewMap(source, settings.smoothing, 512);
             Heightmap map = LandscapeBuilder.WithoutSpecks(unfilled, source.Width, settings);
 
@@ -81,7 +82,10 @@ namespace Dystopographica
             LandscapeSettings made = LandscapeSettings.Load(Argument("mod")) ?? new LandscapeSettings();
             float buildArea = made.BuildArea;
             // The map with our own water, unless the other is asked for or the map is dry.
-            WaterKind kind = Argument("water", "custom") == "normal" || !made.waterPlane ? WaterKind.Normal : WaterKind.Custom;
+            // A dry map has no such file. The saved settings cannot say: on a painted
+            // map the picture decides whether there is water.
+            string customWater = $"Assets/{Argument("mod")}/Landscape{LandscapeSettings.FileSuffix(WaterKind.Custom)}.prefab";
+            WaterKind kind = Argument("water", "custom") == "normal" || !File.Exists(customWater) ? WaterKind.Normal : WaterKind.Custom;
             string path = $"Assets/{Argument("mod")}/Landscape{LandscapeSettings.FileSuffix(kind)}.prefab";
             var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(path);
             if (prefab == null) throw new FileNotFoundException("There is no made landscape at " + path);

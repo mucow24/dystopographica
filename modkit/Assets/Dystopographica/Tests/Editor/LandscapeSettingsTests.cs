@@ -416,6 +416,46 @@ namespace Dystopographica.Tests
         }
 
         [Test]
+        public void For_AHeightmap_IsTheSettingsThemselves()
+        {
+            LandscapeSettings settings = Settings();
+
+            Assert.AreSame(settings, settings.For(Square));
+            Assert.AreSame(settings, settings.For(null));
+        }
+
+        // A painted map says for itself what is water and what is plane.
+        [Test]
+        public void For_APaintedMap_PutsTheCursorsAtThePaintedLevels()
+        {
+            LandscapeSettings settings = Settings();
+            settings.water = 0.05f;
+            settings.planeStart = 0.1f;
+            settings.planeEnd = 0.9f;
+            settings.peakHeight = 33f;
+            var painted = new Heightmap(1, 1, new[] { 0.5f }, painted: true, paintedWater: true);
+
+            LandscapeSettings used = settings.For(painted);
+
+            Assert.AreEqual(PaintedMap.Water, used.water);
+            Assert.AreEqual(PaintedMap.PlaneStart, used.planeStart);
+            Assert.AreEqual(PaintedMap.PlaneEnd, used.planeEnd);
+            Assert.AreEqual(33f, used.peakHeight, "everything else is kept");
+            Assert.AreEqual(0.1f, settings.planeStart, "and the settings themselves are untouched, for the next heightmap");
+        }
+
+        [TestCase(true, false)]
+        [TestCase(false, true)]
+        public void For_APaintedMap_HasWaterWhenSomethingIsPaintedBlue(bool paintedWater, bool waterSwitch)
+        {
+            LandscapeSettings settings = Settings();
+            settings.waterPlane = waterSwitch;
+            var painted = new Heightmap(1, 1, new[] { 0.5f }, painted: true, paintedWater: paintedWater);
+
+            Assert.AreEqual(paintedWater, settings.For(painted).waterPlane);
+        }
+
+        [Test]
         public void DisplayName_FallsBackToTheModName()
         {
             LandscapeSettings settings = Settings();

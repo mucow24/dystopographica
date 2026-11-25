@@ -46,5 +46,19 @@ namespace Dystopographica.Tests
 
             Assert.AreEqual(new[] { 0f, 0f }, map.Values);
         }
+
+        // A painted map's values stand for water, plane and heights at fixed levels.
+        // Stretching them would move everything to another level.
+        [Test]
+        public void Normalized_PaintedMap_IsLeftAsItIs()
+        {
+            var painted = new Heightmap(3, 1, new[] { 0.2f, 0.5f, 0.8f }, painted: true, paintedWater: true);
+
+            Heightmap map = painted.Normalized();
+
+            Assert.AreEqual(new[] { 0.2f, 0.5f, 0.8f }, map.Values);
+            Assert.IsTrue(map.IsPainted);
+            Assert.IsTrue(map.HasPaintedWater);
+        }
     }
 }

@@ -55,14 +55,17 @@ namespace Dystopographica
         /// Writes the mod into Assets/[mod name], or rewrites it in place. Asset files
         /// and ids stay the same from one run to the next.
         /// </summary>
-        public static void Make(LandscapeSettings settings, Heightmap source)
+        public static void Make(LandscapeSettings asEntered, Heightmap source)
         {
-            List<string> problems = settings.Problems(source);
+            List<string> problems = asEntered.Problems(source);
             if (problems.Count > 0) throw new InvalidOperationException(string.Join(" ", problems));
 
             // The preset folder goes in first. It marks the mod folder as ours to overwrite.
-            Directory.CreateDirectory(settings.PresetFolder);
+            Directory.CreateDirectory(asEntered.PresetFolder);
             AssetDatabase.Refresh();
+
+            // A painted map brings its own cursors and its own answer to "is there water".
+            LandscapeSettings settings = asEntered.For(source);
 
             string folder = settings.Folder;
             Heightmap normalized = source.Normalized();
@@ -95,7 +98,21 @@ namespace Dystopographica
             ModKitBridge.WriteMod(folder, settings, prefabs, thumbnail);
 
             AssetDatabase.SaveAssets();
-            settings.Save();
+            asEntered.Save();
+        }
+
+        /// <summary>
+        /// Writes the map as a picture to paint on: blue under water, green on the city
+        /// plane, grey elsewhere (see PaintedMap). It is the map the preview shows,
+        /// smoothed and with its specks filled, at the heightmap's full size. Chosen as
+        /// the heightmap, the picture is made into a landscape as it is painted.
+        /// </summary>
+        public static void ExportPaintedMap(LandscapeSettings asEntered, Heightmap source, string path)
+        {
+            LandscapeSettings settings = asEntered.For(source);
+            Heightmap normalized = source.Normalized();
+            Heightmap map = WithoutSpecks(Smoothing.Gaussian(normalized, settings.smoothing), normalized.Width, settings);
+            File.WriteAllBytes(path, HeightmapFile.EncodeRgb16(map.Width, map.Height, PaintedMap.Paint(map, settings)));
         }
 
         /// <summary>

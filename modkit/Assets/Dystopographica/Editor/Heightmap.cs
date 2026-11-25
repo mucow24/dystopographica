@@ -8,8 +8,10 @@ namespace Dystopographica
     /// </summary>
     public sealed class Heightmap
     {
-        public Heightmap(int width, int height, float[] values)
+        public Heightmap(int width, int height, float[] values, bool painted = false, bool paintedWater = false)
         {
+            IsPainted = painted;
+            HasPaintedWater = painted && paintedWater;
             if (values.Length != width * height)
                 throw new ArgumentException($"A {width} x {height} heightmap needs {width * height} values, not {values.Length}.");
             Width = width;
@@ -31,11 +33,25 @@ namespace Dystopographica
         public float Min { get; }
         public float Max { get; }
 
+        /// <summary>
+        /// Whether the map was read from a painted picture (see PaintedMap). Its values
+        /// then stand for water, plane and heights at fixed levels, not for heights alone.
+        /// </summary>
+        public bool IsPainted { get; }
+
+        /// <summary>Whether anything on a painted map is painted as water.</summary>
+        public bool HasPaintedWater { get; }
+
         public float this[int x, int y] => Values[y * Width + x];
 
-        /// <summary>The same map stretched so its lowest point is 0 and its highest is 1.</summary>
+        /// <summary>
+        /// The same map stretched so its lowest point is 0 and its highest is 1. A painted
+        /// map is left as it is: stretching it would move its fixed levels.
+        /// </summary>
         public Heightmap Normalized()
         {
+            if (IsPainted) return this;
+
             float range = Max - Min;
             var values = new float[Values.Length];
             if (range > 0f)

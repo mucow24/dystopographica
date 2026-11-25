@@ -17,8 +17,9 @@ namespace Dystopographica
         public static Heightmap Load(string path) => Decode(File.ReadAllBytes(path));
 
         /// <summary>
-        /// Decodes an 8-bit or 16-bit PNG. A colour image contributes its red channel,
-        /// and any alpha channel is ignored.
+        /// Decodes an 8-bit or 16-bit PNG. A colour image with blue or green areas is a
+        /// painted map (see PaintedMap). Any other colour image contributes its red
+        /// channel. An alpha channel is ignored.
         /// </summary>
         public static Heightmap Decode(byte[] file)
         {
@@ -35,7 +36,10 @@ namespace Dystopographica
             int width = ReadInt(file, 16), height = ReadInt(file, 20);
             int channels = colourType == 0 ? 1 : colourType == 2 ? 3 : colourType == 4 ? 2 : 4;
             int bytesPerPixel = channels * bitDepth / 8;
+            int bytesPerChannel = bitDepth / 8;
+            bool colour = channels >= 3;
             var values = new float[width * height];
+            float[] green = colour ? new float[width * height] : null, blue = colour ? new float[width * height] : null;
             byte[] row = new byte[width * bytesPerPixel], above = new byte[width * bytesPerPixel];
 
             try
@@ -56,7 +60,10 @@ namespace Dystopographica
                         for (int x = 0; x < width; x++)
                         {
                             int i = x * bytesPerPixel;
-                            values[y * width + x] = bitDepth == 16 ? ((row[i] << 8) | row[i + 1]) / 65535f : row[i] / 255f;
+                            values[y * width + x] = Sample(row, i, bitDepth);
+                            if (!colour) continue;
+                            green[y * width + x] = Sample(row, i + bytesPerChannel, bitDepth);
+                            blue[y * width + x] = Sample(row, i + 2 * bytesPerChannel, bitDepth);
                         }
                         (row, above) = (above, row);
                     }
@@ -67,7 +74,105 @@ namespace Dystopographica
                 // DeflateStream reports bad data in its own words. Say it in ours.
                 throw new InvalidDataException(Damaged, e);
             }
-            return new Heightmap(width, height, values);
+            Heightmap painted = colour ? PaintedMap.Read(width, height, values, green, blue) : null;
+            return painted ?? new Heightmap(width, height, values);
+        }
+
+        static float Sample(byte[] row, int at, int bitDepth) =>
+            bitDepth == 16 ? ((row[at] << 8) | row[at + 1]) / 65535f : row[at] / 255f;
+
+        /// <summary>
+        /// Writes a 16-bit colour PNG. `rgb` holds three numbers for each pixel, red, green
+        /// and blue, row by row from the top. Unity's own encoder is not used, for the
+        /// decoder's reason: this file is read back as heights and wants all sixteen bits.
+        /// </summary>
+        public static byte[] EncodeRgb16(int width, int height, ushort[] rgb)
+        {
+            if (rgb.Length != width * height * 3)
+                throw new ArgumentException($"A {width} x {height} picture needs {width * height * 3} numbers, not {rgb.Length}.");
+
+            // Each row is a filter byte and then its pixels, high byte first. Filter 1
+            // stores each byte as its difference from the same byte of the pixel to the
+            // left, which is what makes flat areas and slopes compress.
+            const int bytesPerPixel = 6;
+            int stride = 1 + width * bytesPerPixel;
+            var rows = new byte[stride * height];
+            for (int y = 0; y < height; y++)
+            {
+                int start = y * stride;
+                rows[start] = 1;
+                for (int i = 0; i < width * 3; i++)
+                {
+                    ushort value = rgb[y * width * 3 + i];
+                    rows[start + 1 + i * 2] = (byte)(value >> 8);
+                    rows[start + 2 + i * 2] = (byte)value;
+                }
+                for (int i = stride - 1; i > bytesPerPixel; i--) rows[start + i] -= rows[start + i - bytesPerPixel];
+            }
+
+            var header = new byte[13];
+            WriteInt(header, 0, (uint)width);
+            WriteInt(header, 4, (uint)height);
+            header[8] = 16; // bits per channel
+            header[9] = 2;  // colour type: red, green, blue
+
+            var file = new MemoryStream();
+            file.Write(Signature, 0, Signature.Length);
+            WriteChunk(file, "IHDR", header);
+            WriteChunk(file, "IDAT", Zlib(rows));
+            WriteChunk(file, "IEND", new byte[0]);
+            return file.ToArray();
+        }
+
+        /// <summary>Deflate-compressed data in the zlib wrapper PNG asks for: a two-byte header before, a checksum after.</summary>
+        static byte[] Zlib(byte[] data)
+        {
+            var packed = new MemoryStream();
+            packed.WriteByte(0x78);
+            packed.WriteByte(0x9C);
+            using (var deflate = new DeflateStream(packed, CompressionMode.Compress, true)) deflate.Write(data, 0, data.Length);
+
+            // Adler-32.
+            uint a = 1, b = 0;
+            foreach (byte value in data)
+            {
+                a = (a + value) % 65521;
+                b = (b + a) % 65521;
+            }
+            var checksum = new byte[4];
+            WriteInt(checksum, 0, (b << 16) | a);
+            packed.Write(checksum, 0, 4);
+            return packed.ToArray();
+        }
+
+        static void WriteChunk(Stream file, string type, byte[] data)
+        {
+            var named = new byte[4 + data.Length];
+            for (int i = 0; i < 4; i++) named[i] = (byte)type[i];
+            Array.Copy(data, 0, named, 4, data.Length);
+
+            // CRC-32 of the chunk's name and contents.
+            uint crc = 0xFFFFFFFF;
+            foreach (byte value in named)
+            {
+                crc ^= value;
+                for (int bit = 0; bit < 8; bit++) crc = (crc & 1) != 0 ? (crc >> 1) ^ 0xEDB88320 : crc >> 1;
+            }
+
+            var number = new byte[4];
+            WriteInt(number, 0, (uint)data.Length);
+            file.Write(number, 0, 4);
+            file.Write(named, 0, named.Length);
+            WriteInt(number, 0, ~crc);
+            file.Write(number, 0, 4);
+        }
+
+        static void WriteInt(byte[] into, int at, uint value)
+        {
+            into[at] = (byte)(value >> 24);
+            into[at + 1] = (byte)(value >> 16);
+            into[at + 2] = (byte)(value >> 8);
+            into[at + 3] = (byte)value;
         }
 
         /// <summary>Bits per channel from the PNG header, or 0 when the file is not a PNG.</summary>

@@ -19,9 +19,10 @@ namespace Dystopographica.Tests
         // uses all of them (none, sub, up, average, Paeth), and the first is split
         // across two data chunks.
         //   Filtered16:    5 x 6, 16-bit grey, pixel(x, y) = (x * 7919 + y * 10473 + x * y * 311) % 65536
-        //   FilteredRgba8: 5 x 5, 8-bit RGBA, red(x, y) = (x * 53 + y * 101 + x * y * 7) % 256
-        const string Filtered16 = "iVBORw0KGgoAAAANSUhEUgAAAAUAAAAGEAAAAAB+ANfUAAAACXRFWHRDb21tZW50AHjX9HQIAAAAFElEQVR42mNgYJB7b3sv5mz1HkaNl4pqCupOb/QAAAAzSURBVGDIpPlSS0E7XKdP7yhzUJD6LfUyjYmaa1k0X6ooqISrnNY9DWSqKqgq6USqHgUAtggU4qMING4AAAAASUVORK5CYII=";
-        const string FilteredRgba8 = "iVBORw0KGgoAAAANSUhEUgAAAAUAAAAFCAYAAACNbyblAAAACXRFWHRDb21tZW50AHjX9HQIAAAAV0lEQVR42mNhYGT6bzqfEwUzpxr8agipWcIQwW7GED3RneH+nEgGplT9nww5LjIMxZH2DFV5SQyNza0MjPp9b/973StCwSwglYFKMgyBn4EqP08F0q0MAE79Kk77/RdTAAAAAElFTkSuQmCC";
+        //   FilteredRgba8: 5 x 5, 8-bit RGBA, red(x, y) = (x * 53 + y * 101 + x * y * 7) % 256,
+        //                  green and blue the same as red, so that it is not a painted map
+        const string Filtered16 ="iVBORw0KGgoAAAANSUhEUgAAAAUAAAAGEAAAAAB+ANfUAAAACXRFWHRDb21tZW50AHjX9HQIAAAAFElEQVR42mNgYJB7b3sv5mz1HkaNl4pqCupOb/QAAAAzSURBVGDIpPlSS0E7XKdP7yhzUJD6LfUyjYmaa1k0X6ooqISrnNY9DWSqKqgq6USqHgUAtggU4qMING4AAAAASUVORK5CYII=";
+        const string FilteredRgba8 = "iVBORw0KGgoAAAANSUhEUgAAAAUAAAAFCAYAAACNbyblAAAACXRFWHRDb21tZW50AHjX9HQIAAAAWklEQVR42mNgAAJTU1ONrKysgPnz51dcuXJlAWNqaiqnjY2NBjJmAgnm5ORwFhcXc1ZVVXE2NjZyMp86dUooOjpaMj4+XjIpKUny2bNnkiwglYGBgWAMUgmiAdxaIeB9xlAkAAAAAElFTkSuQmCC";
 
         static readonly int[] Pixels16 = { 0, 1, 255, 256, 257, 32768, 65534, 65535 };
         static readonly int[] Pixels8 = { 0, 1, 127, 128, 200, 254, 255, 64 };
@@ -112,6 +113,59 @@ namespace Dystopographica.Tests
             var error = Assert.Throws<InvalidDataException>(() => HeightmapFile.Decode(new byte[] { 1, 2, 3, 4, 5, 6, 7, 8, 9 }));
 
             StringAssert.Contains("PNG", error.Message);
+        }
+
+        // 3 x 2: red, green, blue / black, mid-grey, white.
+        static readonly ushort[] Colours =
+        {
+            65535, 0, 0, 0, 65535, 0, 0, 0, 65535,
+            0, 0, 0, 32768, 32768, 32768, 65535, 65535, 65535,
+        };
+
+        [Test]
+        public void EncodeRgb16_WritesAPngThatUnityReads()
+        {
+            var texture = new Texture2D(2, 2);
+            try
+            {
+                Assert.IsTrue(texture.LoadImage(HeightmapFile.EncodeRgb16(3, 2, Colours)));
+
+                Assert.AreEqual(3, texture.width);
+                Assert.AreEqual(2, texture.height);
+                // Unity's rows run from the bottom up.
+                Color32 green = texture.GetPixel(1, 1), grey = texture.GetPixel(1, 0);
+                Assert.AreEqual(new Color32(0, 255, 0, 255), green);
+                Assert.AreEqual(new Color32(128, 128, 128, 255), grey);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(texture);
+            }
+        }
+
+        [Test]
+        public void EncodeRgb16_KeepsAllSixteenBits()
+        {
+            // Nothing in it is blue or green, so it reads back as a heightmap: its red channel.
+            var grey = new ushort[4 * 2 * 3];
+            for (int i = 0; i < grey.Length; i++) grey[i] = (ushort)Pixels16[i / 3];
+
+            Heightmap map = HeightmapFile.Decode(HeightmapFile.EncodeRgb16(4, 2, grey));
+
+            Assert.IsFalse(map.IsPainted);
+            for (int i = 0; i < Pixels16.Length; i++) Assert.AreEqual(Pixels16[i], Mathf.RoundToInt(map.Values[i] * 65535), $"pixel {i}");
+        }
+
+        [Test]
+        public void Decode_APictureWithBlueOrGreenInIt_IsAPaintedMap()
+        {
+            Heightmap map = HeightmapFile.Decode(HeightmapFile.EncodeRgb16(3, 2, Colours));
+
+            Assert.IsTrue(map.IsPainted);
+            Assert.IsTrue(map.HasPaintedWater);
+            Assert.That(map[1, 0], Is.InRange(PaintedMap.PlaneStart, PaintedMap.PlaneEnd), "green");
+            Assert.Less(map[2, 0], PaintedMap.Water, "blue");
+            Assert.AreEqual(1f, map[2, 1], "white");
         }
 
         [Test]

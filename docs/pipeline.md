@@ -313,6 +313,7 @@ Updating is importing the newer package over the old one.
 │ └────────────────────────────┘   histogram, lowest values at bottom  │
 │ Blue is under water and green is the city plane. The plane covers    │
 │ 67% of the starting build area.                                      │
+│ [ Export as a painted map ]                                          │
 │ Mapping                                                              │
 │   Plane end, Plane start                      sliders, 0 to 1        │
 │   [x] Water   Water level (slider)                                   │
@@ -335,11 +336,42 @@ the texture importer, which would resize, compress and gamma-correct it. The dec
 is our own, about a hundred lines. Unity's `Texture2D.LoadImage` cuts 16-bit PNGs
 down to 8 bits (a test caught this), and 256 levels is too few for flat land: in the
 Miami sample the whole city spans about 6% of the value range. Greyscale is expected;
-a colour image contributes its red channel. Interlaced, indexed and lower-bit-depth
+a colour image contributes its red channel, unless it is a painted map (below). Interlaced, indexed and lower-bit-depth
 PNGs are refused with a message that says how to re-save them. Square images only for
 now. Unity Terrain accepts resolutions of 2^n + 1 (513, 1025, 2049, 4097); any other
 size is resampled bilinearly to the nearest one and the window says so. Unity's RAW
 format is not read yet.
+
+**Painted map.** The cursors divide the map by height alone, which cannot say
+"this low ground is city, that low ground is river". For that, "Export as a painted
+map" saves the map the preview shows (smoothed, specks filled, at the heightmap's
+full size) as a 16-bit colour PNG to paint on in an image editor:
+
+- blue is under water;
+- green is the city plane;
+- grey is everything else, and its lightness is its height. Mid-grey is level with
+  the city plane, white is the peak, and black is as low as land goes: the
+  waterline, or the lowest depth on a map with nothing blue.
+
+The painted file is chosen with the same Browse button as a heightmap. A PNG with
+any blue or green in it is a painted map (a channel has to lead the other two by
+0.1, so a soft brush edge counts and a grey picture's faint colour cast does not);
+any other PNG is a heightmap, as before. The picture says what is water and what
+is plane, so for a painted map the window hides the levels bar, the three cursor
+sliders and the Water switch: there is water if anything is blue. Peak height,
+lowest depth, smoothing, the speck filter and edge softness still apply. The
+cursors keep their positions in the settings, for when the heightmap is chosen
+again.
+
+Inside, a painted map is turned into an ordinary map of values with water, plane
+and heights at fixed levels (blue 0, shore 0.2 to 0.4, green 0.5, hills 0.6 to 1),
+and the cursors are set to those levels for it (`LandscapeSettings.For`). From
+there it is made like any heightmap, so nothing downstream knows the difference.
+Exported and made again untouched, a map gives the same terrain, which a test
+checks; with smoothing on it is smoothed a second time. The round trip is lossy
+by design: 8-bit editors leave 128 shades of grey on each side of the plane, and a
+painted map cannot be re-divided with the cursors. The window reads the file again
+whenever it is saved, so painting and looking can alternate.
 
 **Mapping: the levels bar.** A vertical bar spans the heightmap's value range, lowest
 at the bottom, with the image's histogram drawn inside it so the mass of flat land
@@ -746,7 +778,8 @@ Assets/Dystopographica/
   Editor/
     Dystopographica.Editor.asmdef
     Heightmap.cs            # a grid of heights, and normalising it
-    HeightmapFile.cs        # the PNG decoder
+    HeightmapFile.cs        # the PNG decoder, and the encoder for painted maps
+    PaintedMap.cs           # §4.2: a map as a picture to paint on, and read back
     Resample.cs             # bilinear resize, block shrink, terrain resolutions
     Smoothing.cs            # Gaussian blur
     Specks.cs               # fills small holes in the city plane
