@@ -254,13 +254,14 @@ namespace Dystopographica
                     UnityEngine.Object.DestroyImmediate(water.GetComponent<Collider>());
                 }
 
-                // Unity's plane again, with nothing left of it but its collider, at y = 0.
-                GameObject sheet = GameObject.CreatePrimitive(PrimitiveType.Plane);
-                sheet.name = "Buildable Plane";
+                // A box whose top is at y = 0, exactly. Unity's plane mesh was the sheet at
+                // first, and a ray dropped on it lands a hair under zero on the northern
+                // half of the map (-5e-17). The game kept its small fill-in buildings off
+                // that half.
+                var sheet = new GameObject("Buildable Plane").AddComponent<BoxCollider>();
                 sheet.transform.SetParent(root.transform, false);
-                sheet.transform.localScale = new Vector3(settings.WorldSize / 10, 1f, settings.WorldSize / 10);
-                UnityEngine.Object.DestroyImmediate(sheet.GetComponent<MeshRenderer>());
-                UnityEngine.Object.DestroyImmediate(sheet.GetComponent<MeshFilter>());
+                sheet.center = new Vector3(0f, -0.5f, 0f);
+                sheet.size = new Vector3(settings.WorldSize, 1f, settings.WorldSize);
                 return PrefabUtility.SaveAsPrefabAsset(root, path);
             }
             finally

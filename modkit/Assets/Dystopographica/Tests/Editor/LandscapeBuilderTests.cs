@@ -216,6 +216,28 @@ namespace Dystopographica.Tests
             }
         }
 
+        // Seen in the game: on a sheet made of Unity's plane mesh, the small buildings the
+        // game fills in by itself stayed off the northern half of every map. A ray
+        // dropped on that mesh lands a hair under zero north of the middle (-5e-17) and
+        // a hair over it to the south. The sheet has to be at zero exactly, everywhere.
+        [Test]
+        public void Make_PutsTheSheetAtExactlyZero_InEveryQuarterOfTheMap()
+        {
+            LandscapeBuilder.Make(Settings(), Ramp());
+
+            GameObject landscape = UnityEngine.Object.Instantiate(Load<GameObject>(Custom));
+            try
+            {
+                foreach (float x in new[] { -60f, 60f })
+                    foreach (float z in new[] { -60f, 60f })
+                        Assert.AreEqual(0f, LandsAt(landscape, x, z), $"at ({x}, {z})");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(landscape);
+            }
+        }
+
         // Night City's levels (docs, section 3.7). The game stands every building at
         // y = 0, on the sheet. The land is drawn a little above that, and the water
         // just under the land but still above the sheet, so a building that stands
