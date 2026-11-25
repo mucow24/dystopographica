@@ -501,6 +501,69 @@ namespace Dystopographica.Tests
             Assert.AreEqual(0.1f, LandscapeBuilder.WithoutSpecks(half, 8, settings).Values[5], "but not under four");
         }
 
+        // Exporting the map and making the landscape from the export, untouched, gives
+        // the landscape the heightmap itself gives.
+        [TestCase(true)]
+        [TestCase(false)]
+        public void ExportPaintedMap_ThenMake_GivesTheSameTerrain(bool water)
+        {
+            LandscapeSettings settings = Settings();
+            settings.waterPlane = water;
+            string prefab = water ? Custom : Plain;
+            string file = Path.Combine(Path.GetTempPath(), "Dystopographica Test Painted.png");
+            try
+            {
+                LandscapeBuilder.Make(settings, Ramp());
+                var terrain = Load<GameObject>(prefab).GetComponentInChildren<Terrain>();
+                var expected = new float[33];
+                for (int x = 0; x < 33; x++) expected[x] = terrain.transform.localPosition.y + terrain.terrainData.GetHeight(x, 16);
+
+                LandscapeBuilder.ExportPaintedMap(settings, Ramp(), file);
+                Heightmap painted = HeightmapFile.Load(file);
+                // The cursors no longer matter: the picture says what is water and plane.
+                settings.water = settings.planeStart = 0.05f;
+                settings.planeEnd = 0.95f;
+                settings.waterPlane = !water;
+                LandscapeBuilder.Make(settings, painted);
+
+                Assert.IsTrue(painted.IsPainted);
+                terrain = Load<GameObject>(prefab).GetComponentInChildren<Terrain>();
+                for (int x = 0; x < 33; x++)
+                    Assert.AreEqual(expected[x], terrain.transform.localPosition.y + terrain.terrainData.GetHeight(x, 16), 2e-3f, $"column {x}");
+                Assert.AreEqual(0.05f, LandscapeSettings.Load(ModName).planeStart, "the mod's saved settings are the window's own");
+            }
+            finally
+            {
+                File.Delete(file);
+            }
+        }
+
+        [Test]
+        public void ExportPaintedMap_ShowsTheMapAsThePreviewDoes_SmoothedAndWithSpecksFilled()
+        {
+            // Flat plane, one pit in the middle, one peak in a corner so the values span 0 to 1.
+            var values = new float[33 * 33];
+            for (int i = 0; i < values.Length; i++) values[i] = 0.5f;
+            values[16 * 33 + 16] = 0f;
+            values[0] = 1f;
+            LandscapeSettings settings = Settings();
+            settings.speckSize = 2;
+            string file = Path.Combine(Path.GetTempPath(), "Dystopographica Test Painted.png");
+            try
+            {
+                LandscapeBuilder.ExportPaintedMap(settings, new Heightmap(33, 33, values), file);
+                Heightmap painted = HeightmapFile.Load(file);
+
+                Assert.AreEqual(33, painted.Width);
+                Assert.That(painted[16, 16], Is.InRange(PaintedMap.PlaneStart, PaintedMap.PlaneEnd), "the pit is painted as plane");
+                Assert.AreEqual(1f, painted[0, 0], "the peak is white");
+            }
+            finally
+            {
+                File.Delete(file);
+            }
+        }
+
         [TestCase(2000, 500)]
         [TestCase(512, 512)]
         [TestCase(100, 100)]

@@ -31,7 +31,11 @@ namespace Dystopographica
 
         // Rebuilt from the settings whenever Unity reloads its scripts.
         [NonSerialized] string loadedPath;
+        [NonSerialized] DateTime loadedTime;
         [NonSerialized] Heightmap source;
+        // The settings the map is made with. For a heightmap, `settings` itself. A painted
+        // map brings its own cursors and water, and this is then a copy with those.
+        [NonSerialized] LandscapeSettings shown;
         [NonSerialized] string heightmapNote = "";
         [NonSerialized] bool heightmapFailed;
         [NonSerialized] int[] histogram;
@@ -69,6 +73,11 @@ namespace Dystopographica
             DestroyImmediate(previewTexture);
         }
 
+        // Coming back from an image editor: the file may have been saved again.
+        void OnFocus() => Repaint();
+
+        bool Painted => source != null && source.IsPainted;
+
         void OnGUI()
         {
             // IMGUI runs OnGUI once to lay controls out and again to draw them, and both
@@ -77,10 +86,11 @@ namespace Dystopographica
             if (Event.current.type == EventType.Layout || problems == null)
             {
                 LoadHeightmap();
+                shown = settings.For(source);
                 problems = settings.Problems(source);
                 // Only while nothing is being dragged or typed, so a cursor never jumps out from under the pointer.
                 bool atRest = GUIUtility.hotControl == 0 && !EditorGUIUtility.editingTextField;
-                if (atRest && source != null && previewTexture != null && !previewStale && settings.RaiseWaterOutOfTheDry(waterFraction))
+                if (atRest && source != null && !Painted && previewTexture != null && !previewStale && settings.RaiseWaterOutOfTheDry(waterFraction))
                 {
                     previewStale = true;
                     waterWasRaised = true;
@@ -106,7 +116,7 @@ namespace Dystopographica
                 EditorGUILayout.LabelField(settings.heightmapPath == "" ? "No file chosen" : settings.heightmapPath, EditorStyles.textField);
                 if (GUILayout.Button("Browse", GUILayout.Width(70f)))
                 {
-                    string chosen = EditorUtility.OpenFilePanel("Choose a greyscale PNG heightmap", FolderOf(settings.heightmapPath), "png");
+                    string chosen = EditorUtility.OpenFilePanel("Choose a greyscale PNG heightmap, or a painted map",FolderOf(settings.heightmapPath), "png");
                     if (chosen != "") settings.heightmapPath = chosen;
                     GUIUtility.ExitGUI();
                 }
@@ -117,9 +127,12 @@ namespace Dystopographica
 
         void LoadHeightmap()
         {
-            if (settings.heightmapPath == loadedPath) return;
+            // Read again when the file is saved again, as it is over and over while a map is being painted.
+            DateTime time = File.Exists(settings.heightmapPath) ? File.GetLastWriteTimeUtc(settings.heightmapPath) : default;
+            if (settings.heightmapPath == loadedPath && time == loadedTime) return;
 
             loadedPath = settings.heightmapPath;
+            loadedTime = time;
             source = null;
             previewMap = null;
             heightmapNote = "";
@@ -136,8 +149,13 @@ namespace Dystopographica
                 source = raw.Normalized();
                 histogram = Histogram.Compute(source, HistogramBins);
                 heightmapNote = $"{raw.Width} x {raw.Height} pixels, {bits}-bit.";
+                if (raw.IsPainted)
+                    heightmapNote += " A painted map: blue is water, green is the city plane, and grey is everything else. "
+                        + "Mid-grey is level with the city, lighter is higher, up to the peak at white, and darker is lower. "
+                        + "The picture says what is water and plane, so there are no cursors to set.";
                 if (resolution != raw.Width) heightmapNote += $" The terrain will be resampled to {resolution} x {resolution}.";
-                if (bits == 8) heightmapNote += " An 8-bit file has only 256 height levels, so flat land can come out terraced. Use a 16-bit PNG if you can.";
+                if (bits == 8 && raw.IsPainted) heightmapNote += " An 8-bit file has few shades of grey, so slopes can come out terraced. Keep it 16-bit if your image editor can.";
+                else if (bits == 8) heightmapNote += " An 8-bit file has only 256 height levels, so flat land can come out terraced. Use a 16-bit PNG if you can.";
             }
             catch (Exception e)
             {
@@ -163,11 +181,13 @@ namespace Dystopographica
                 GUI.DrawTexture(image, previewTexture, ScaleMode.StretchToFill);
                 DrawBuildArea(image);
                 GUILayout.Space(12f);
-                DrawLevels(GUILayoutUtility.GetRect(BarWidth + BarLabelWidth, size, GUILayout.Width(BarWidth + BarLabelWidth), GUILayout.Height(size)));
+                // A painted map has no cursors: the picture says what is water and plane.
+                if (!Painted) DrawLevels(GUILayoutUtility.GetRect(BarWidth + BarLabelWidth, size, GUILayout.Width(BarWidth + BarLabelWidth), GUILayout.Height(size)));
             }
             EditorGUILayout.LabelField(
-                "Blue is under water and green is the city plane. Drag the three cursors on the bar."
-                + (settings.waterPlane ? $" Water covers {waterFraction:P0} of the map." : "")
+                "Blue is under water and green is the city plane."
+                + (Painted ? "" : " Drag the three cursors on the bar.")
+                + (shown.waterPlane ? $" Water covers {waterFraction:P0} of the map." : "")
                 + (settings.speckSize > 0 ? " Brighter green is what the speck filter filled." : ""),
                 EditorStyles.wordWrappedMiniLabel);
             if (showWaterNote)
@@ -178,6 +198,31 @@ namespace Dystopographica
             EditorGUILayout.LabelField(
                 $"The yellow square is the {settings.mapSize}% build area, and any fainter squares inside it are the smaller map sizes. The plane covers {planeFraction:P0} of it. The Build area slider sets how much of the map it takes in.",
                 EditorStyles.wordWrappedMiniLabel);
+
+            if (GUILayout.Button(new GUIContent("Export as a painted map", "Saves this map as a picture to paint on in an image editor: blue is water, green is the city plane, and grey is everything else, lighter the higher it is, with mid-grey level with the city. Paint on it in those colours, save it as a PNG, and choose it with Browse above. The landscape is then made as painted.")))
+                ExportPaintedMap();
+        }
+
+        void ExportPaintedMap()
+        {
+            string name = Path.GetFileNameWithoutExtension(settings.heightmapPath) + (Painted ? "" : " painted");
+            string chosen = EditorUtility.SaveFilePanel("Save the painted map", FolderOf(settings.heightmapPath), name, "png");
+            if (chosen != "")
+            {
+                try
+                {
+                    LandscapeBuilder.ExportPaintedMap(settings, source, chosen);
+                    status = $"Wrote the painted map to {chosen}. Paint on it, save it as a PNG, then choose it with Browse.";
+                    statusIsError = false;
+                }
+                catch (Exception e)
+                {
+                    status = e.Message;
+                    statusIsError = true;
+                    Debug.LogException(e);
+                }
+            }
+            GUIUtility.ExitGUI();
         }
 
         void PaintPreview()
@@ -187,11 +232,11 @@ namespace Dystopographica
                 DestroyImmediate(previewTexture);
                 previewTexture = new Texture2D(previewMap.Width, previewMap.Height, TextureFormat.RGBA32, false) { hideFlags = HideFlags.HideAndDontSave };
             }
-            Heightmap shown = LandscapeBuilder.WithoutSpecks(previewMap, source.Width, settings);
-            previewTexture.SetPixels32(Preview.Paint(shown, settings.PaintedWater, settings.planeStart, settings.planeEnd, previewMap));
+            Heightmap filled = LandscapeBuilder.WithoutSpecks(previewMap, source.Width, shown);
+            previewTexture.SetPixels32(Preview.Paint(filled, shown.PaintedWater, shown.planeStart, shown.planeEnd, previewMap));
             previewTexture.Apply();
-            planeFraction = Preview.PlaneFraction(shown, settings.planeStart, settings.planeEnd, BuildAreaFraction());
-            waterFraction = Preview.WaterFraction(shown, settings.PaintedWater);
+            planeFraction = Preview.PlaneFraction(filled, shown.planeStart, shown.planeEnd, BuildAreaFraction());
+            waterFraction = Preview.WaterFraction(filled, shown.PaintedWater);
             previewStale = false;
         }
 
@@ -297,12 +342,16 @@ namespace Dystopographica
             EditorGUILayout.LabelField("Mapping", EditorStyles.boldLabel);
             EditorGUI.BeginChangeCheck();
 
-            CursorSlider(LandscapeSettings.PlaneEnd, settings.planeEnd, "Plane end", "Heights between plane start and plane end are flattened into the city plane.");
-            CursorSlider(LandscapeSettings.PlaneStart, settings.planeStart, "Plane start", "Heights between plane start and plane end are flattened into the city plane.");
+            // On a painted map the picture says where the plane and the water are, and whether there is water.
+            if (!Painted)
+            {
+                CursorSlider(LandscapeSettings.PlaneEnd, settings.planeEnd, "Plane end", "Heights between plane start and plane end are flattened into the city plane.");
+                CursorSlider(LandscapeSettings.PlaneStart, settings.planeStart, "Plane start", "Heights between plane start and plane end are flattened into the city plane.");
 
-            settings.waterPlane = EditorGUILayout.Toggle(new GUIContent("Water", "Whether the map has water. Off makes a dry map: no water surface, and the water cursor is ignored."), settings.waterPlane);
-            using (new EditorGUI.DisabledScope(!settings.waterPlane))
-                CursorSlider(LandscapeSettings.Water, settings.water, "Water level", "Where the shoreline is: everything lower than this is under water. Put it right under plane start for a quay, lower for a sloping shore.");
+                settings.waterPlane = EditorGUILayout.Toggle(new GUIContent("Water", "Whether the map has water. Off makes a dry map: no water surface, and the water cursor is ignored."), settings.waterPlane);
+                using (new EditorGUI.DisabledScope(!settings.waterPlane))
+                    CursorSlider(LandscapeSettings.Water, settings.water, "Water level", "Where the shoreline is: everything lower than this is under water. Put it right under plane start for a quay, lower for a sloping shore.");
+            }
 
             settings.mapSize = EditorGUILayout.IntPopup(
                 new GUIContent("Map size", "The game's map size this landscape is made for. The game never scales a landscape, it only widens the build area, so the map is sized to fill the build area of one size. A 400% map also works at 100% and 200%, where the city sits on the middle of it. A 100% map is offered at 100% only. A 200% map can be chosen at 400% too, but will show bare ground at its edges there."),
@@ -311,10 +360,10 @@ namespace Dystopographica
             float newShare = EditorGUILayout.Slider(new GUIContent("Build area (% of map)", "How much of the map's width the build area covers. At 100 the whole map is the build area. Lower it to leave scenery around the city: at 50 the build area is the middle half."), share, 5f, 100f);
             if (newShare != share) settings.buildAreaShare = newShare / 100f;
             EditorGUILayout.LabelField(" ", $"In the game the map is {settings.WorldSize:0.#} units wide, and the {settings.mapSize}% build area is {settings.BuildArea:0.#}.", EditorStyles.wordWrappedMiniLabel);
-            settings.peakHeight = Mathf.Max(0f, EditorGUILayout.FloatField(new GUIContent("Peak height", "How far the heightmap's highest point rises above the city plane, in units."), settings.peakHeight));
+            settings.peakHeight = Mathf.Max(0f, EditorGUILayout.FloatField(new GUIContent("Peak height", "How far the heightmap's highest point rises above the city plane, in units. On a painted map, the height of white."), settings.peakHeight));
             // Only a dry map has one. With water, the sea bed lies at a fixed level just under it.
-            if (!settings.waterPlane)
-                settings.lowestDepth = Mathf.Max(0f, EditorGUILayout.FloatField(new GUIContent("Lowest depth", "How far the heightmap's lowest point drops below the city plane, in units."), settings.lowestDepth));
+            if (!shown.waterPlane)
+                settings.lowestDepth = Mathf.Max(0f, EditorGUILayout.FloatField(new GUIContent("Lowest depth", "How far the heightmap's lowest point drops below the city plane, in units. On a painted map, the depth of black."), settings.lowestDepth));
             settings.speckSize = EditorGUILayout.IntSlider(new GUIContent("Fill specks under (px)", "Fills small holes in the city plane without blurring anything. Any patch of water, shore or hill smaller than this many heightmap pixels, with plane all the way round it, becomes plane. The preview shows what it filled in a brighter green. 0 is off. The preview is a smaller picture, so it shows the effect only roughly for limits under about 30."), settings.speckSize, 0, LargestSpeckSize);
             settings.smoothing = EditorGUILayout.Slider(new GUIContent("Smoothing", "Blurs the heightmap by this many pixels before mapping it. Clears specks of noise off the city plane. 0 is off."),settings.smoothing, 0f, 10f);
             settings.knee = EditorGUILayout.Slider(new GUIContent("Edge softness", "How gently terrain leaves the city plane, as a share of the heightmap's range. 0 gives a hard crease."), settings.knee, 0f, 0.25f);
@@ -371,7 +420,7 @@ namespace Dystopographica
                 if (GUILayout.Button("Clear", GUILayout.Width(50f))) settings.thumbnailPath = "";
             }
 
-            using (new EditorGUI.DisabledScope(!settings.waterPlane))
+            using (new EditorGUI.DisabledScope(!shown.waterPlane))
                 settings.normalWater = EditorGUILayout.ToggleLeft(
                     new GUIContent("Also make a version with normal water", $"The map's water ripples and mirrors what stands around it. Tick this and the mod holds the same map a second time, with flat, still water like the game's example landscape. The game lists it as \"{settings.DisplayName} (normal water)\", and the player picks."),
                     settings.normalWater);
