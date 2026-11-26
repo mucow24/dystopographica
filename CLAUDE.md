@@ -38,6 +38,11 @@ before sending anyone into the game.
 Unity allows one instance per project, so both fail while the Unity editor has
 `modkit/` open. Logs and test results land in `modkit/Logs/`.
 
+There is no hosted CI, because the tests need the ModKit and it cannot be
+redistributed. Instead `.githooks/pre-push` runs the tests before every push and
+stops the push if they fail or cannot run (no Unity project in this checkout, or the
+editor has it open). Never push with `--no-verify`.
+
 Arguments to `run` are `name=value` pairs; `Cli.cs` lists the entry points. The tests
 build and compile real mods named `Dystopographica Test ...` under `modkit/Assets/`
 and delete them afterwards. Installing is only ever tested against a temporary
@@ -51,3 +56,5 @@ folder: never point a test at the game's Mods folder.
    delete `modkit/.gitignore`. The template ships its own, which overrides ours.
 3. Run `pwsh tools/dev.ps1 test`. The first run imports the project and takes
    several minutes.
+4. Run `git config core.hooksPath .githooks` to turn on the pre-push hook. The
+   setting is shared by every worktree of the clone.

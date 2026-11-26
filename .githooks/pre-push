@@ -1,0 +1,4 @@
+#!/bin/sh
+# Runs the edit-mode tests before every push. If they fail, or cannot run, the push
+# is stopped. Turn it on once per clone: git config core.hooksPath .githooks
+exec pwsh -NoProfile -File "$(git rev-parse --show-toplevel)/tools/dev.ps1" test
